@@ -6,7 +6,10 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lxml import etree
 from pptx import Presentation as PptxPresentation
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.oxml.ns import qn
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
@@ -22,8 +25,10 @@ CT, CB = 1.8, 6.85    # content top / bottom
 CH = CB - CT
 
 LABELS = {
-    "vi": {"frame": "Khung hình tại", "sources": "Thời điểm trong video", "ai_image": "Ảnh minh họa tạo bởi AI"},
-    "en": {"frame": "Frame at", "sources": "Video timestamps", "ai_image": "AI-generated illustration"},
+    "vi": {"frame": "Khung hình tại", "sources": "Thời điểm trong video", "ai_image": "Ảnh minh họa tạo bởi AI",
+           "definition": "ĐỊNH NGHĨA", "insight": "ĐIỂM CỐT LÕI"},
+    "en": {"frame": "Frame at", "sources": "Video timestamps", "ai_image": "AI-generated illustration",
+           "definition": "DEFINITION", "insight": "KEY INSIGHT"},
 }
 
 
@@ -437,8 +442,162 @@ def layout_summary(ctx: BuildContext, sl, s: Slide) -> None:
                   anchor=MSO_ANCHOR.MIDDLE)
 
 
+def layout_agenda(ctx: BuildContext, sl, s: Slide) -> None:
+    """Overview: a colour panel with the title on the left, numbered parts on the right."""
+    t = ctx.theme
+    draw.set_background(sl, t.rgb("background"))
+    panel_w = 4.3
+    draw.shape(sl, 0, 0, panel_w, H, t.rgb("primary"))
+    draw.shape(sl, -1.2, H - 2.0, 3.0, 3.0, t.rgb("accent2"), MSO_SHAPE.OVAL, alpha=0.22)  # stays inside the panel
+    paras, size = _fit(ctx, s.slide_number, [s.title], panel_w - 1.0, 2.6, 40, 24, bold=True)
+    draw.text(sl, M, 1.0, panel_w - 1.0, 2.6, paras, size, t.rgb("on_primary"), t.title_font, bold=True,
+              anchor=MSO_ANCHOR.BOTTOM)
+    draw.shape(sl, M + 0.1, 3.8, 1.1, 0.08, t.rgb("accent"))
+    if s.subtitle:
+        paras, size = _fit(ctx, s.slide_number, [s.subtitle], panel_w - 1.0, 1.8, 18, 12)
+        draw.text(sl, M, 4.05, panel_w - 1.0, 1.8, paras, size, t.rgb("on_primary"), t.body_font)
+
+    points = _take(ctx, s, s.key_points, 7)
+    x0, x1 = panel_w + 0.8, W - M - 0.1
+    top, bottom = 0.8, H - 0.8
+    row_h = min(1.05, (bottom - top) / len(points))
+    y = top + ((bottom - top) - row_h * len(points)) / 2
+    num_w = 1.0
+    for i, p in enumerate(points):
+        color = "accent" if i % 2 == 0 else "accent2"
+        draw.text(sl, x0, y, num_w, row_h, f"{i + 1:02d}", min(30, row_h * 34), t.rgb(color), t.title_font,
+                  bold=True, anchor=MSO_ANCHOR.MIDDLE)
+        tw = x1 - x0 - num_w
+        pp, ps = _fit(ctx, s.slide_number, [p], tw, row_h - 0.1, 22, 13)
+        draw.text(sl, x0 + num_w, y + 0.05, tw, row_h - 0.1, pp, ps, t.rgb("text"), t.body_font,
+                  anchor=MSO_ANCHOR.MIDDLE)
+        if i < len(points) - 1:
+            draw.shape(sl, x0, y + row_h - 0.005, x1 - x0, 0.01, t.rgb("muted"), alpha=0.35)
+        y += row_h
+
+
+def layout_concept(ctx: BuildContext, sl, s: Slide) -> None:
+    """A term explained: definition card + its characteristics, with the AI illustration when present."""
+    t = ctx.theme
+    chrome(ctx, sl, s)
+    illus = ctx.illustrations.get(s.slide_id)
+    parts = [(it.heading, it.text) for it in s.items[:4]] or [(p, "") for p in s.key_points[:4]]
+    if illus:
+        img_w = 5.6
+        img_h = img_w * 9 / 16
+        ix, iy = W - M - 0.1 - img_w, CT + (CH - 0.45 - img_h) / 2
+        draw.shape(sl, ix + 0.18, iy + 0.18, img_w, img_h, t.rgb("accent"), alpha=0.35)
+        draw.picture_cover(sl, illus, ix, iy, img_w, img_h)
+        draw.text(sl, ix, iy + img_h + 0.22, img_w, 0.35, ctx.labels["ai_image"], 11, t.rgb("muted"), t.body_font,
+                  italic=True)
+        col_w = ix - M - 0.1 - 0.5
+        def_h = 2.1 if parts else CH - 0.2
+        list_box = (M + 0.1, CT + def_h + 0.3, col_w, CH - def_h - 0.4)
+    else:
+        col_w = 5.4
+        def_h = CH - 0.2
+        list_box = (M + 0.1 + col_w + 0.5, CT + 0.1, W - 2 * M - 0.7 - col_w, CH - 0.2)
+
+    card = _card(ctx, sl, M + 0.1, CT + 0.1, col_w, def_h, fill_name="primary")
+    card.name = "Definition"
+    draw.text(sl, M + 0.4, CT + 0.3, col_w - 0.6, 0.4, ctx.labels["definition"], 12, t.rgb("accent"),
+              t.body_font, bold=True)
+    dp, ds = _fit(ctx, s.slide_number, [s.subtitle], col_w - 0.6, def_h - 0.9, 22 if illus else 28, 14)
+    draw.text(sl, M + 0.4, CT + 0.75, col_w - 0.6, def_h - 0.9, dp, ds, t.rgb("on_primary"), t.title_font,
+              anchor=MSO_ANCHOR.TOP if illus else MSO_ANCHOR.MIDDLE)
+    if not parts:
+        return
+    lx, ly, lw, lh = list_box
+    gap = 0.2
+    row_h = min(1.35, (lh - gap * (len(parts) - 1)) / len(parts))
+    y = ly + (lh - (row_h * len(parts) + gap * (len(parts) - 1))) / 2
+    for i, (head, body) in enumerate(parts):
+        color = "accent" if i % 2 == 0 else "accent2"
+        draw.shape(sl, lx, y, 0.08, row_h, t.rgb(color))
+        tw = lw - 0.3
+        if body:
+            hp, hs = _fit(ctx, s.slide_number, [head], tw, row_h * 0.42, 20, 12, bold=True)
+            draw.text(sl, lx + 0.25, y, tw, row_h * 0.42, hp, hs, _title_color(t), t.title_font, bold=True,
+                      anchor=MSO_ANCHOR.BOTTOM)
+            bp, bs = _fit(ctx, s.slide_number, [body], tw, row_h * 0.58, 17, 11)
+            draw.text(sl, lx + 0.25, y + row_h * 0.42, tw, row_h * 0.58, bp, bs, t.rgb("text"), t.body_font)
+        else:
+            hp, hs = _fit(ctx, s.slide_number, [head], tw, row_h, 20, 12)
+            draw.text(sl, lx + 0.25, y, tw, row_h, hp, hs, t.rgb("text"), t.body_font, anchor=MSO_ANCHOR.MIDDLE)
+        y += row_h + gap
+
+
+def layout_key_insight(ctx: BuildContext, sl, s: Slide) -> None:
+    """One emphasised message in large type, with up to three supporting points."""
+    t = ctx.theme
+    chrome(ctx, sl, s)
+    support = _take(ctx, s, s.key_points, 3)
+    box_h = CH - 0.2 if not support else 2.75
+    x, y, w = M + 0.1, CT + 0.1, W - 2 * M - 0.2
+    _card(ctx, sl, x, y, w, box_h)
+    draw.shape(sl, x, y, 0.12, box_h, t.rgb("accent"))
+    draw.text(sl, x + 0.45, y + 0.05, 1.2, 1.2, "“", 60, t.rgb("accent"), "Georgia", bold=True)
+    draw.text(sl, x + 1.5, y + 0.25, 4, 0.4, ctx.labels["insight"], 12, t.rgb("accent"), t.body_font, bold=True)
+    mp, ms = _fit(ctx, s.slide_number, [s.subtitle], w - 2.0, box_h - 0.95, 34, 18, bold=True)
+    draw.text(sl, x + 1.5, y + 0.7, w - 2.0, box_h - 0.95, mp, ms, _title_color(t), t.title_font, bold=True,
+              anchor=MSO_ANCHOR.MIDDLE)
+    if not support:
+        return
+    gap = 0.35
+    n = len(support)
+    cw = (w - gap * (n - 1)) / n
+    top = y + box_h + 0.35
+    ch = CB - top
+    for i, p in enumerate(support):
+        cx = x + i * (cw + gap)
+        color = "accent" if i % 2 == 0 else "accent2"
+        draw.shape(sl, cx, top, cw, 0.06, t.rgb(color))
+        pp, ps = _fit(ctx, s.slide_number, [p], cw - 0.2, ch - 0.2, 20, 12)
+        draw.text(sl, cx, top + 0.2, cw - 0.2, ch - 0.2, pp, ps, t.rgb("text"), t.body_font)
+
+
+def layout_conclusion(ctx: BuildContext, sl, s: Slide) -> None:
+    """Closing slide: the final message on the brand colour, with up to three closing statements."""
+    t = ctx.theme
+    draw.set_background(sl, t.rgb("primary"))
+    draw.shape(sl, -1.5, H - 3.2, 4.5, 4.5, t.rgb("accent2"), MSO_SHAPE.OVAL, alpha=0.2)
+    draw.shape(sl, W - 3.6, -1.4, 5.0, 5.0, t.rgb("accent"), MSO_SHAPE.OVAL, alpha=0.18)
+    points = _take(ctx, s, s.key_points, 3)
+    text_w = 5.6 if points else W - 2 * M - 2.5
+    x = M + 0.2
+    paras, size = _fit(ctx, s.slide_number, [s.title], text_w, 2.6, 44, 26, bold=True)
+    draw.text(sl, x, 1.3, text_w, 2.6, paras, size, t.rgb("on_primary"), t.title_font, bold=True,
+              anchor=MSO_ANCHOR.BOTTOM)
+    draw.shape(sl, x + 0.1, 4.1, 1.3, 0.08, t.rgb("accent"))
+    if s.subtitle:
+        paras, size = _fit(ctx, s.slide_number, [s.subtitle], text_w, 1.8, 20, 13)
+        draw.text(sl, x, 4.35, text_w, 1.8, paras, size, t.rgb("on_primary"), t.body_font)
+    if not points:
+        return
+    px = x + text_w + 0.6
+    pw = W - M - px
+    gap = 0.3
+    rh = min(1.5, (H - 2.4 - gap * (len(points) - 1)) / len(points))
+    y = (H - (rh * len(points) + gap * (len(points) - 1))) / 2
+    for i, p in enumerate(points):
+        panel = draw.shape(sl, px, y, pw, rh, t.rgb("on_primary"),
+                           MSO_SHAPE.ROUNDED_RECTANGLE if t.rounded else MSO_SHAPE.RECTANGLE,
+                           radius=0.12 if t.rounded else None, alpha=0.1)
+        panel.name = "Closing point"
+        d = min(0.55, rh - 0.4)
+        _badge(ctx, sl, px + 0.3, y + (rh - d) / 2, d, "✓", "accent")
+        pp, ps = _fit(ctx, s.slide_number, [p], pw - 1.2, rh - 0.15, 20, 12)
+        draw.text(sl, px + 1.05, y + 0.075, pw - 1.2, rh - 0.15, pp, ps, t.rgb("on_primary"), t.body_font,
+                  anchor=MSO_ANCHOR.MIDDLE)
+        y += rh + gap
+
+
 LAYOUTS = {
     "title": layout_title,
+    "agenda": layout_agenda,
+    "concept": layout_concept,
+    "key_insight": layout_key_insight,
+    "conclusion": layout_conclusion,
     "section": layout_section,
     "bullets": layout_bullets,
     "image_left": lambda c, sl, s: layout_image(c, sl, s, "left"),
@@ -453,6 +612,33 @@ LAYOUTS = {
 
 
 # --------------------------------------------------------------------------- entry point
+
+def apply_theme_definition(prs, theme: Theme) -> None:
+    """Write the deck's colours and fonts into the slide master's theme.
+
+    Slides are drawn with explicit formatting, but slides, text boxes and shapes the user
+    adds later in PowerPoint inherit from the theme, so they match the deck's style.
+    """
+    part = prs.slide_master.part.part_related_by(RT.THEME)
+    root = etree.fromstring(part.blob)
+    elements = root.find(qn("a:themeElements"))
+    scheme = elements.find(qn("a:clrScheme"))
+    scheme.set("name", f"Video2Slides {theme.label}")
+    colors = {"dk1": theme.text, "lt1": theme.background, "dk2": theme.primary, "lt2": theme.surface,
+              "accent1": theme.accent, "accent2": theme.accent2, "accent3": theme.primary,
+              "accent4": theme.muted, "accent5": theme.accent, "accent6": theme.accent2,
+              "hlink": theme.accent, "folHlink": theme.accent2}
+    for name, hex_value in colors.items():
+        slot = scheme.find(qn(f"a:{name}"))
+        for child in list(slot):
+            slot.remove(child)
+        etree.SubElement(slot, qn("a:srgbClr")).set("val", hex_value)
+    fonts = elements.find(qn("a:fontScheme"))
+    fonts.set("name", f"Video2Slides {theme.label}")
+    fonts.find(qn("a:majorFont")).find(qn("a:latin")).set("typeface", theme.title_font)
+    fonts.find(qn("a:minorFont")).find(qn("a:latin")).set("typeface", theme.body_font)
+    part._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
 
 def build_pptx(pres: Presentation, out_path: Path, style: str = "professional",
                frames: list[FrameRef] | None = None, illustrations: dict[str, Path] | None = None) -> list[str]:
@@ -471,6 +657,7 @@ def build_pptx(pres: Presentation, out_path: Path, style: str = "professional",
     prs = PptxPresentation()
     prs.slide_width = Inches(W)
     prs.slide_height = Inches(H)
+    apply_theme_definition(prs, theme)
     blank = prs.slide_layouts[6]
     prs.core_properties.title = pres.presentation_title
     prs.core_properties.subject = pres.subtitle or pres.presentation_title

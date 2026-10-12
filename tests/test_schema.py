@@ -2,13 +2,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.ai.schema import LAYOUT_TYPES, Presentation, Slide, gemini_response_schema
-from tests.sample_outline import SAMPLE, sample_presentation
+from tests.sample_outline import SAMPLE, full_presentation, sample_presentation
 
 
 def test_sample_is_valid():
     p = sample_presentation()
     assert len(p.slides) == 11
-    assert {s.layout_type for s in p.slides} == set(LAYOUT_TYPES)
+    assert {s.layout_type for s in full_presentation().slides} == set(LAYOUT_TYPES)
 
 
 def test_process_with_one_item_degrades_to_bullets():

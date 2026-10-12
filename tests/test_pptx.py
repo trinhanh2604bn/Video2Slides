@@ -91,3 +91,33 @@ def test_validate_rejects_non_pptx(tmp_path):
     bad = tmp_path / "bad.pptx"
     bad.write_bytes(b"nope")
     assert not validate_pptx(bad).ok
+
+
+@pytest.mark.parametrize("style", list(THEMES))
+def test_every_layout_renders_cleanly(tmp_path, frames, style):
+    from tests.sample_outline import full_presentation
+
+    pres = full_presentation()
+    layouts = {s.layout_type for s in pres.slides}
+    assert {"agenda", "concept", "key_insight", "conclusion"} <= layouts
+    out = tmp_path / f"{style}.pptx"
+    illus = tmp_path / "illus.jpg"
+    Image.new("RGB", (1344, 768), "purple").save(illus)
+    concept_id = next(s.slide_id for s in pres.slides if s.layout_type == "concept")
+    warnings = build_pptx(pres, out, style, frames, illustrations={concept_id: illus})
+    report = validate_pptx(out, expected_slides=len(pres.slides))
+    assert report.ok, report.errors
+    assert not report.warnings, report.warnings
+    assert not warnings
+    assert report.pictures == 4  # 3 video frames + 1 AI illustration on the concept slide
+
+
+def test_new_layouts_degrade_without_required_content():
+    from app.ai.schema import Slide
+
+    assert Slide(slide_number=1, title="A", layout_type="agenda", key_points=["one"]).layout_type == "bullets"
+    ki = Slide(slide_number=1, title="A", layout_type="key_insight", key_points=["main", "support"])
+    assert (ki.layout_type, ki.subtitle, ki.key_points) == ("key_insight", "main", ["support"])
+    c = Slide(slide_number=1, title="A", layout_type="concept",
+              items=[{"heading": "x", "text": "1"}, {"heading": "y", "text": "2"}])
+    assert c.layout_type == "cards"

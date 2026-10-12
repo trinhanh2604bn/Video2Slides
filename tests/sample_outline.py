@@ -22,3 +22,24 @@ SAMPLE = {
 
 def sample_presentation() -> Presentation:
     return Presentation.model_validate(SAMPLE)
+
+
+# Layouts added later; kept separate so slide indexes used by older tests stay stable.
+EXTRA_SLIDES = {
+  "agenda": {"slide_number": 2, "title": "Nội dung", "layout_type": "agenda", "subtitle": "Lộ trình 30 phút", "key_points": ["Khái niệm nền tảng", "Các loại học máy", "Quy trình xây dựng mô hình", "Ứng dụng thực tế", "Tổng kết"], "speaker_notes": "Lộ trình.", "visual_type": "none"},
+  "concept": {"slide_number": 5, "title": "Mô hình (model)", "subtitle": "Một hàm toán học học được từ dữ liệu để biến đầu vào thành dự đoán.", "layout_type": "concept", "items": [{"heading": "Đầu vào", "text": "Đặc trưng mô tả từng mẫu dữ liệu"}, {"heading": "Tham số", "text": "Giá trị được điều chỉnh trong lúc huấn luyện"}, {"heading": "Đầu ra", "text": "Dự đoán: một nhãn hoặc một con số"}], "speaker_notes": "Khái niệm mô hình.", "visual_type": "diagram", "image_prompt": "a glass sculpture transforming scattered marbles into neatly sorted rows"},
+  "key_insight": {"slide_number": 10, "title": "Bài học quan trọng nhất", "subtitle": "Chất lượng dữ liệu quan trọng hơn độ phức tạp của thuật toán.", "layout_type": "key_insight", "key_points": ["Dữ liệu bẩn cho kết quả sai", "Mô hình đơn giản thường đủ tốt", "Luôn kiểm tra dữ liệu trước"], "speaker_notes": "Nhấn mạnh.", "visual_type": "none"},
+  "conclusion": {"slide_number": 15, "title": "Bắt đầu từ một bài toán nhỏ", "subtitle": "Học máy là kỹ năng thực hành", "layout_type": "conclusion", "key_points": ["Chọn một tập dữ liệu quen thuộc", "Thử một mô hình đơn giản", "Đánh giá và cải tiến dần"], "speaker_notes": "Kết thúc.", "visual_type": "none"},
+}
+
+
+def full_presentation() -> Presentation:
+    """Every layout in a realistic order (15 slides)."""
+    import json
+    data = json.loads(json.dumps(SAMPLE))
+    slides = data["slides"]
+    slides.insert(1, EXTRA_SLIDES["agenda"])
+    slides.insert(4, EXTRA_SLIDES["concept"])
+    slides.insert(10, EXTRA_SLIDES["key_insight"])
+    slides.append(EXTRA_SLIDES["conclusion"])
+    return Presentation.model_validate(data)

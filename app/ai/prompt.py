@@ -20,8 +20,13 @@ STRICT RULES
 4. Put fuller explanations in speaker_notes (2-5 sentences, natural spoken style).
 5. Choose layout_type from the CONTENT, and vary layouts across the deck:
    - title: first slide only (title + subtitle summarizing the video).
+   - agenda: second slide for decks of 8+ slides; key_points = the main parts, in order (3-6, short).
    - section: divider before a major part (title + optional subtitle).
    - bullets: a set of related points.
+   - concept: one key term or idea explained. title = the term, subtitle = a one-sentence
+     definition in plain words, items = 2-4 characteristics/components (heading + short text).
+   - key_insight: ONE important message the speaker emphasises. subtitle = that message as a
+     short statement (<= 20 words, paraphrased, not a fake quote), key_points = 0-3 supporting points.
    - image_left / image_right: a point best illustrated by a moment of the
      video; set visual_type="video_frame" and source_timestamps to the seconds
      where that moment happens.
@@ -31,9 +36,12 @@ STRICT RULES
    - cards: 3-6 parallel concepts (items: heading=concept, text=one-line explanation).
    - stats: ONLY when the transcript states concrete numbers (items: heading=the exact
      number as said, text=what it measures). Never use stats otherwise.
-   - summary: the final key-takeaways slide (key_points).
+   - summary: key takeaways (3-6 key_points).
+   - conclusion: the very last slide when the speaker draws a conclusion or calls to action:
+     title = closing message, subtitle optional, key_points = 1-3 final statements.
+   Never use the same layout on more than two consecutive slides.
 6. visual_type: "video_frame" for image layouts, "diagram" for process/timeline/
-   two_column/cards, "icon" for stats, otherwise "none". visual_description briefly
+   two_column/cards/concept, "icon" for stats, otherwise "none". visual_description briefly
    says what the visual should show.
 7. source_timestamps: seconds (numbers) in the transcript that support the slide.
 8. Every slide must have content; no empty slides.
@@ -73,9 +81,9 @@ def illustration_rule(max_images: int) -> str:
     return f"""AI ILLUSTRATIONS: an image model will draw pictures for some slides.
 - Choose at most {max_images} slides where a picture genuinely helps understanding or mood:
   the title slide and concept/example slides. Never for stats, timeline, process,
-  two_column, cards or summary slides.
-- On those slides set visual_type="illustration", use layout image_left or image_right
-  (or keep layout title for the first slide), and fill image_prompt.
+  two_column, cards, agenda, key_insight, summary or conclusion slides.
+- On those slides set visual_type="illustration", use layout image_left, image_right or
+  concept (or keep layout title for the first slide), and fill image_prompt.
 - image_prompt: ALWAYS in English, 15-40 words, one concrete visual scene or metaphor
   (subject, setting, mood) that matches the slide content. Describe only what is seen.
   Never ask for text, letters, words, numbers, labels, logos, charts, tables, user

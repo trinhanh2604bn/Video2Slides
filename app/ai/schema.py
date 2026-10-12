@@ -8,8 +8,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 LayoutType = Literal[
     "title",
+    "agenda",
     "section",
     "bullets",
+    "concept",
+    "key_insight",
     "image_left",
     "image_right",
     "two_column",
@@ -18,6 +21,7 @@ LayoutType = Literal[
     "cards",
     "stats",
     "summary",
+    "conclusion",
 ]
 VisualType = Literal["video_frame", "illustration", "diagram", "icon", "none"]
 
@@ -77,9 +81,22 @@ class Slide(BaseModel):
         if lt == "two_column" and not (self.left_points and self.right_points):
             self.key_points = self.key_points or self.left_points + self.right_points
             self.layout_type = "bullets"
-        if self.layout_type in ("bullets", "image_left", "image_right", "summary") and not self.key_points:
-            if self.items:
-                self.key_points = [f"{i.heading}: {i.text}".strip(": ") for i in self.items]
+        text_layouts = ("bullets", "image_left", "image_right", "summary", "agenda", "conclusion")
+        if self.layout_type in text_layouts and not self.key_points and self.items:
+            self.key_points = [f"{i.heading}: {i.text}".strip(": ") for i in self.items]
+        if self.layout_type == "agenda" and len(self.key_points) < 2:
+            self.layout_type = "bullets"
+        if self.layout_type == "key_insight" and not self.subtitle:
+            if self.key_points:
+                # The highlighted statement is the subtitle; the remaining points support it.
+                self.subtitle, self.key_points = self.key_points[0], self.key_points[1:]
+            else:
+                self.layout_type = "bullets"
+        if self.layout_type == "concept" and not self.subtitle:
+            if self.key_points:
+                self.subtitle, self.key_points = self.key_points[0], self.key_points[1:]
+            else:
+                self.layout_type = "cards" if len(self.items) >= 2 else "bullets"
         return self
 
     def has_body(self) -> bool:

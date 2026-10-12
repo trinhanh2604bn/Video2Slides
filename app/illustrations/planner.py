@@ -19,7 +19,7 @@ from .styles import BASE_NEGATIVE, get_visual_style
 from .validation import check_params, check_prompt, size_for
 
 # Text-structured layouts keep their editable shapes; pictures only go where the layout has room.
-ELIGIBLE_LAYOUTS = ("title", "image_left", "image_right", "bullets")
+ELIGIBLE_LAYOUTS = ("title", "image_left", "image_right", "bullets", "concept")
 DENSITIES = ("standard", "high")
 
 # Used when the outline has no LLM image prompts (offline provider): one neutral title artwork.
