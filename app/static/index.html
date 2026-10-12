@@ -152,7 +152,14 @@
       <h2 id="processTitle">Đang xử lý video</h2>
       <p class="muted" id="processFile"></p>
       <ol class="stages" id="stageList"></ol>
+      <div class="progress" id="stageProgress" hidden>
+        <div class="progress-bar"><span id="stageProgressFill"></span></div>
+        <span class="muted small" id="stageProgressText"></span>
+      </div>
       <p class="muted small" id="queueNote" hidden></p>
+      <div class="row" id="cancelRow">
+        <button class="btn ghost" id="cancelBtn" type="button">Hủy xử lý</button>
+      </div>
       <div class="error-box" id="processError" hidden>
         <p id="processErrorText"></p>
         <div class="row">
@@ -188,6 +195,19 @@
           <button class="btn ghost" id="transcriptBtn" type="button">Xem bản ghi lời nói</button>
           <button class="btn ghost" id="newBtn" type="button">Tạo bài mới</button>
         </div>
+      </div>
+      <div class="card" id="previewCard" hidden>
+        <div class="preview-head">
+          <h3>Xem trước bài trình chiếu</h3>
+          <span class="muted small" id="previewCounter"></span>
+        </div>
+        <p class="muted small" id="previewNote" hidden></p>
+        <div class="preview-stage" id="previewStage" hidden>
+          <button class="nav prev" id="previewPrev" type="button" aria-label="Slide trước">&#8249;</button>
+          <img id="previewMain" alt="">
+          <button class="nav next" id="previewNext" type="button" aria-label="Slide sau">&#8250;</button>
+        </div>
+        <div class="preview-strip" id="previewStrip" role="list"></div>
       </div>
       <div class="card" id="illusCard" hidden>
         <h3>Ảnh minh họa AI</h3>

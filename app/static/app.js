@@ -26,7 +26,8 @@ const STYLE_INFO = {
 const LAYOUT_NAMES = {
   title: "Tiêu đề", section: "Phân đoạn", bullets: "Gạch đầu dòng", image_left: "Ảnh trái",
   image_right: "Ảnh phải", two_column: "So sánh 2 cột", process: "Quy trình", timeline: "Dòng thời gian",
-  cards: "Thẻ lưới", stats: "Số liệu", summary: "Tổng kết",
+  cards: "Thẻ lưới", stats: "Số liệu", summary: "Tổng kết", agenda: "Mục lục", concept: "Khái niệm",
+  key_insight: "Điểm cốt lõi", conclusion: "Kết luận",
 };
 const LANG_NAMES = { vi: "Tiếng Việt", en: "English" };
 
@@ -320,14 +321,18 @@ async function poll() {
     showResult(job);
     return;
   }
-  if (job.status === "failed") {
+  if (job.status === "failed" || job.status === "cancelled") {
     renderStages(stage, true, job.stage_times || {});
-    showError(job.error || "Đã xảy ra lỗi.", true);
+    showError(job.error || "Đã xảy ra lỗi.", true, job.status === "cancelled");
     return;
   }
   showView("processView");
   $("processError").hidden = true;
+  $("cancelRow").hidden = false;
+  $("cancelBtn").disabled = Boolean(job.cancel_requested);
+  $("cancelBtn").textContent = job.cancel_requested ? "Đang hủy…" : "Hủy xử lý";
   renderStages(stage, false, job.stage_times || {});
+  renderProgress(job, stage);
   const ip = job.illustrations;
   if (stage === "generating_images" && ip && ip.total) {
     // Real counts reported by the GPU worker, not an estimated percentage.
@@ -349,9 +354,44 @@ async function poll() {
   state.pollTimer = setTimeout(poll, 2000);
 }
 
-function showError(message, canRetry) {
+function renderProgress(job, stage) {
+  // Only measured values: decoded audio seconds (Whisper) or finished images (GPU). No invented percentages.
+  const p = job.progress, ip = job.illustrations;
+  let done = null, total = null, text = "";
+  if (stage === "transcribing" && p && p.stage === "transcribing" && p.total_sec > 0) {
+    done = p.done_sec; total = p.total_sec;
+    text = `Đã nhận dạng ${fmtClock(done)} / ${fmtClock(total)} âm thanh`;
+  } else if (stage === "generating_images" && ip && ip.total) {
+    done = ip.done; total = ip.total;
+    text = `${ip.done}/${ip.total} ảnh hoàn tất` + (ip.failed ? ` · ${ip.failed} lỗi` : "");
+  }
+  $("stageProgress").hidden = total === null;
+  if (total !== null) {
+    $("stageProgressFill").style.width = `${Math.min(100, Math.round((done / total) * 100))}%`;
+    $("stageProgressText").textContent = text;
+  }
+}
+
+async function cancelJob() {
+  const btn = $("cancelBtn");
+  btn.disabled = true;
+  btn.textContent = "Đang hủy…";
+  try {
+    await api(`/api/jobs/${state.jobId}/cancel`, { method: "POST" });
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Hủy xử lý";
+    $("queueNote").textContent = e.message;
+    $("queueNote").hidden = false;
+  }
+  poll();
+}
+
+function showError(message, canRetry, cancelled = false) {
   showView("processView");
-  $("processTitle").textContent = "Không thể hoàn tất";
+  $("cancelRow").hidden = true;
+  $("stageProgress").hidden = true;
+  $("processTitle").textContent = cancelled ? "Đã hủy xử lý" : "Không thể hoàn tất";
   $("processErrorText").textContent = message;
   $("retryBtn").hidden = !canRetry;
   $("processError").hidden = false;
@@ -378,6 +418,7 @@ function showResult(job) {
     lw.appendChild(s);
   }
   $("transcriptCard").hidden = true;
+  loadPreview();
   const il = r.illustrations;
   const illusText = $("resultIllus");
   if (il && il.requested) {
@@ -391,6 +432,73 @@ function showResult(job) {
     $("illusCard").hidden = true;
   }
   showView("resultView");
+}
+
+// ------------------------------------------------------------------ slide preview
+const preview = { urls: [], index: 0, blobs: new Map() };
+
+function previewBlob(url) {
+  if (!preview.blobs.has(url)) {
+    preview.blobs.set(url, api(url).then((r) => r.blob()).then((b) => URL.createObjectURL(b)));
+  }
+  return preview.blobs.get(url);
+}
+
+async function loadPreview() {
+  const card = $("previewCard");
+  for (const p of preview.blobs.values()) p.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+  preview.blobs.clear();
+  preview.urls = [];
+  $("previewStrip").innerHTML = "";
+  $("previewStage").hidden = true;
+  $("previewCounter").textContent = "";
+  $("previewNote").textContent = "Đang tạo ảnh xem trước…";
+  $("previewNote").hidden = false;
+  card.hidden = false;
+  let data;
+  try {
+    data = await (await api(`/api/jobs/${state.jobId}/preview`)).json();
+  } catch (e) {
+    $("previewNote").textContent = e.message;
+    return;
+  }
+  if (!data.available) {
+    $("previewNote").textContent = `${data.reason} Bạn vẫn có thể tải tệp .pptx để xem.`;
+    return;
+  }
+  preview.urls = data.slides;
+  $("previewNote").hidden = true;
+  $("previewStage").hidden = false;
+  const strip = $("previewStrip");
+  preview.urls.forEach((url, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "listitem");
+    b.setAttribute("aria-label", `Slide ${i + 1}`);
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    previewBlob(url).then((u) => { img.src = u; }).catch(() => {});
+    b.appendChild(img);
+    b.addEventListener("click", () => showSlide(i));
+    strip.appendChild(b);
+  });
+  showSlide(0);
+}
+
+function showSlide(i) {
+  if (!preview.urls.length) return;
+  preview.index = Math.max(0, Math.min(preview.urls.length - 1, i));
+  const n = preview.index;
+  $("previewCounter").textContent = `Slide ${n + 1} / ${preview.urls.length}`;
+  $("previewMain").alt = `Slide ${n + 1}`;
+  previewBlob(preview.urls[n]).then((u) => { if (preview.index === n) $("previewMain").src = u; }).catch(() => {});
+  $("previewPrev").disabled = n === 0;
+  $("previewNext").disabled = n === preview.urls.length - 1;
+  $("previewStrip").querySelectorAll("button").forEach((b, k) => {
+    b.setAttribute("aria-current", String(k === n));
+    if (k === n) b.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
 }
 
 async function loadIllustrations() {
@@ -535,6 +643,14 @@ $("transcriptBtn").addEventListener("click", toggleTranscript);
 $("newBtn").addEventListener("click", startOver);
 $("restartBtn").addEventListener("click", startOver);
 $("retryBtn").addEventListener("click", retry);
+$("cancelBtn").addEventListener("click", cancelJob);
+$("previewPrev").addEventListener("click", () => showSlide(preview.index - 1));
+$("previewNext").addEventListener("click", () => showSlide(preview.index + 1));
+document.addEventListener("keydown", (e) => {
+  if ($("resultView").hidden || !preview.urls.length || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  if (e.key === "ArrowLeft") showSlide(preview.index - 1);
+  if (e.key === "ArrowRight") showSlide(preview.index + 1);
+});
 $("authForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   store.set("appPassword", $("authInput").value, true);

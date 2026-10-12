@@ -163,6 +163,30 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 1
 .toggle { display: flex; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
 .toggle input { width: 18px; height: 18px; accent-color: var(--primary); }
 .inline-select { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.progress { display: flex; align-items: center; gap: 12px; margin: 8px 12px 0; }
+.progress-bar { flex: 1; height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.progress-bar span { display: block; height: 100%; width: 0; background: var(--primary); transition: width .4s ease; }
+#cancelRow { margin-top: 14px; }
+
+.preview-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.preview-stage { position: relative; background: var(--surface-2); border-radius: 10px; overflow: hidden; margin: 10px 0 12px; }
+.preview-stage img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #fff; }
+.preview-stage .nav {
+  position: absolute; top: 50%; transform: translateY(-50%); width: 40px; height: 40px; border-radius: 50%;
+  border: 0; background: rgba(15, 20, 28, .55); color: #fff; font-size: 26px; line-height: 1; cursor: pointer;
+}
+.preview-stage .nav:hover { background: rgba(15, 20, 28, .75); }
+.preview-stage .nav:disabled { opacity: .25; cursor: default; }
+.preview-stage .prev { left: 10px; }
+.preview-stage .next { right: 10px; }
+.preview-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; }
+.preview-strip button {
+  flex: 0 0 auto; width: 132px; padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden;
+  background: var(--surface-2); cursor: pointer; scroll-snap-align: start;
+}
+.preview-strip button[aria-current="true"] { border-color: var(--primary); }
+.preview-strip img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+
 .illus-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .illus-item { background: var(--surface-2); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
 .illus-item .ph { aspect-ratio: 16 / 9; background: var(--border); display: flex; align-items: center; justify-content: center;
