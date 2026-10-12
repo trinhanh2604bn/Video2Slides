@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video2Slides</title>
+  <meta name="description" content="Chuyển video MP4 thành bài trình chiếu PowerPoint chuyên nghiệp bằng AI">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232F80ED'/><rect x='7' y='9' width='18' height='12' rx='2' fill='white'/><rect x='14' y='22' width='4' height='3' fill='white'/></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="currentColor"/><rect x="7" y="9" width="18" height="12" rx="2" fill="#fff"/><path d="M14 12.5v6l5-3z" fill="currentColor"/></svg>
+      </span>
+      <span>Video2Slides</span>
+    </div>
+    <span class="provider" id="providerBadge" hidden></span>
+  </header>
+
+  <main class="container">
+    <!-- Password gate (only when APP_PASSWORD is configured) -->
+    <section id="authView" class="card" hidden>
+      <h1>Nhập mật khẩu truy cập</h1>
+      <form id="authForm" class="row">
+        <input id="authInput" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
+        <button class="btn primary" type="submit">Tiếp tục</button>
+      </form>
+      <p class="error" id="authError" hidden></p>
+    </section>
+
+    <!-- Upload + settings -->
+    <section id="uploadView" hidden>
+      <div class="hero">
+        <h1>Biến video thành bài trình chiếu chuyên nghiệp</h1>
+        <p>Tải lên video MP4 hoặc dán liên kết YouTube/Facebook — hệ thống sẽ nghe nội dung, tóm tắt ý chính và thiết kế tệp PowerPoint có thể chỉnh sửa.</p>
+      </div>
+
+      <form id="uploadForm" class="card" novalidate>
+        <div class="source-tabs" role="tablist" aria-label="Chọn nguồn video" id="sourceTabs">
+          <button type="button" role="tab" class="source-tab" id="tabFile" aria-selected="true" aria-controls="filePanel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Tải video lên
+          </button>
+          <button type="button" role="tab" class="source-tab" id="tabUrl" aria-selected="false" aria-controls="urlPanel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Dán URL
+          </button>
+        </div>
+
+        <div id="filePanel" role="tabpanel" aria-labelledby="tabFile">
+        <label class="dropzone" id="dropzone" for="fileInput">
+          <input id="fileInput" type="file" accept="video/mp4,.mp4" hidden>
+          <svg class="dz-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <strong>Kéo thả video vào đây</strong>
+          <span>hoặc <u>chọn tệp từ máy</u></span>
+          <small id="limitsText"></small>
+        </label>
+
+        <div class="file-info" id="fileInfo" hidden>
+          <div class="file-meta">
+            <strong id="fileName"></strong>
+            <span id="fileDetails"></span>
+          </div>
+          <button type="button" class="btn ghost" id="clearFile">Đổi tệp</button>
+        </div>
+        <p class="error" id="fileError" hidden></p>
+        </div>
+
+        <div id="urlPanel" role="tabpanel" aria-labelledby="tabUrl" hidden>
+          <label class="field" for="urlInput">
+            <span>Liên kết video YouTube hoặc Facebook</span>
+          </label>
+          <div class="url-row">
+            <span class="platform-chip" id="platformChip" hidden></span>
+            <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="2048"
+                   placeholder="https://www.youtube.com/watch?v=… hoặc https://www.facebook.com/reel/…">
+            <button type="button" class="btn" id="validateUrlBtn" disabled>Kiểm tra URL</button>
+          </div>
+          <small class="hint" id="urlHint">Hỗ trợ: YouTube (video, Shorts, youtu.be) và Facebook (video công khai, Watch, Reels, fb.watch). Tối đa <span id="urlLimits"></span>.</small>
+
+          <div class="video-card" id="videoCard" hidden>
+            <div class="thumb" id="videoThumbWrap">
+              <img id="videoThumb" alt="" referrerpolicy="no-referrer" loading="lazy">
+            </div>
+            <div class="video-meta">
+              <span class="platform-tag" id="videoPlatform"></span>
+              <strong id="videoTitle"></strong>
+              <span class="muted small" id="videoAuthor"></span>
+              <span class="muted small" id="videoDuration"></span>
+              <a class="small src-link" id="videoLink" target="_blank" rel="noopener noreferrer nofollow"></a>
+            </div>
+          </div>
+          <div class="access" id="urlStatus" hidden></div>
+
+          <label class="consent" id="consentRow" hidden>
+            <input type="checkbox" id="rightsCheck">
+            <span>Tôi xác nhận mình là chủ sở hữu nội dung hoặc đã được phép xử lý video này, và việc tải video tuân thủ điều khoản của nền tảng.</span>
+          </label>
+          <p class="error" id="urlError" hidden></p>
+          <button type="button" class="btn ghost small-btn" id="useUploadBtn" hidden>Chuyển sang tải tệp MP4 lên</button>
+        </div>
+
+        <div class="settings">
+          <label class="field wide">
+            <span>Tiêu đề bài trình chiếu <em>(tùy chọn)</em></span>
+            <input id="titleInput" maxlength="150" placeholder="Để trống để AI tự đặt tiêu đề">
+          </label>
+          <label class="field">
+            <span>Ngôn ngữ video</span>
+            <select id="languageSelect"></select>
+          </label>
+          <label class="field">
+            <span>Số slide</span>
+            <select id="slideCountSelect">
+              <option value="0">Tự động đề xuất</option>
+            </select>
+            <small id="slideHint"></small>
+          </label>
+          <fieldset class="field wide">
+            <legend>Phong cách</legend>
+            <div class="styles" id="styleOptions"></div>
+          </fieldset>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary lg" type="submit" id="submitBtn" disabled>Tạo bài trình chiếu</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Processing -->
+    <section id="processView" class="card" hidden>
+      <h2 id="processTitle">Đang xử lý video</h2>
+      <p class="muted" id="processFile"></p>
+      <ol class="stages" id="stageList"></ol>
+      <p class="muted small" id="queueNote" hidden></p>
+      <div class="error-box" id="processError" hidden>
+        <p id="processErrorText"></p>
+        <div class="row">
+          <button class="btn primary" id="retryBtn" type="button">Thử lại</button>
+          <button class="btn ghost" id="restartBtn" type="button">Tải video khác</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Result -->
+    <section id="resultView" hidden>
+      <div class="card result">
+        <div class="result-head">
+          <span class="check" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <div>
+            <p class="eyebrow">Hoàn tất</p>
+            <h2 id="resultTitle"></h2>
+          </div>
+        </div>
+        <dl class="stats">
+          <div><dt>Số slide</dt><dd id="resultSlides"></dd></div>
+          <div><dt>Thời gian xử lý</dt><dd id="resultTime"></dd></div>
+          <div><dt>Hình ảnh từ video</dt><dd id="resultPictures"></dd></div>
+          <div><dt>Ngôn ngữ</dt><dd id="resultLang"></dd></div>
+        </dl>
+        <div class="notice" id="resultNotice" hidden></div>
+        <div class="layouts" id="resultLayouts"></div>
+        <div class="row">
+          <button class="btn primary lg" id="downloadBtn" type="button">Tải PowerPoint (.pptx)</button>
+          <button class="btn ghost" id="transcriptBtn" type="button">Xem bản ghi lời nói</button>
+          <button class="btn ghost" id="newBtn" type="button">Tạo bài mới</button>
+        </div>
+      </div>
+      <div class="card transcript" id="transcriptCard" hidden>
+        <h3>Bản ghi lời nói</h3>
+        <div id="transcriptBody" class="transcript-body"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot muted small">Video được xử lý trên máy chủ và tự động xóa sau khi hoàn tất. Chỉ xử lý nội dung bạn sở hữu hoặc được phép sử dụng.</footer>
+  <script src="app.js"></script>
+</body>
+</html>
