@@ -358,7 +358,7 @@ def api_client(monkeypatch, image_settings):
     from app import main, pipeline
     from app.transcribe import Segment, Transcript
 
-    def fake_transcribe(audio, language=None):
+    def fake_transcribe(audio, language=None, progress=None):
         segs = [Segment(i * 1.0, i * 1.0 + 1, f"Câu thử nghiệm số {i} về quản lý thời gian.") for i in range(6)]
         return Transcript(segs, "vi", 6.0)
 

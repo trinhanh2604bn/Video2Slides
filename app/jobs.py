@@ -50,6 +50,10 @@ class JobNotFound(Exception):
     pass
 
 
+class JobCancelled(Exception):
+    """Raised inside the pipeline when the user cancelled the job."""
+
+
 def job_dir(job_id: str) -> Path:
     """Resolve a job directory, rejecting anything that is not a server-issued id."""
     if not JOB_ID_RE.match(job_id or ""):
@@ -120,6 +124,46 @@ def set_stage(job_id: str, stage: str) -> None:
         save(job_id, data)
 
 
+def request_cancel(job_id: str) -> dict[str, Any]:
+    """Ask a queued/running job to stop. Queued jobs stop immediately; running jobs at the next check."""
+    with _lock:
+        data = load(job_id)
+        if data.get("status") == "queued":
+            data.update(status="cancelled", finished_at=time.time(), error="Đã hủy theo yêu cầu.")
+        elif data.get("status") == "running":
+            data["cancel_requested"] = True
+        save(job_id, data)
+        return data
+
+
+def check_cancel(job_id: str) -> None:
+    """Raise JobCancelled when the user asked to cancel this job (cheap; call between steps)."""
+    try:
+        if load(job_id).get("cancel_requested"):
+            raise JobCancelled(job_id)
+    except JobNotFound:
+        raise JobCancelled(job_id) from None
+
+
+def find_active_duplicate(content_hash: str, options: dict[str, Any]) -> str | None:
+    """An unfinished job for the same video bytes and options (prevents double-submits)."""
+    if not settings.jobs_dir.is_dir():
+        return None
+    for d in settings.jobs_dir.iterdir():
+        if not JOB_ID_RE.match(d.name):
+            continue
+        try:
+            data = load(d.name)
+        except (JobNotFound, ValueError, OSError):
+            continue
+        if (data.get("status") in ("queued", "running") and data.get("content_hash") == content_hash
+                and data.get("options", {}).get("style") == options.get("style")
+                and data.get("options", {}).get("slide_count") == options.get("slide_count")
+                and data.get("options", {}).get("illustrations") == options.get("illustrations")):
+            return d.name
+    return None
+
+
 def delete(job_id: str) -> None:
     shutil.rmtree(job_dir(job_id), ignore_errors=True)
 
@@ -130,7 +174,7 @@ def pending_count() -> int:
 
 def enqueue(job_id: str) -> int:
     """Queue a job and return its position (1 = next)."""
-    update(job_id, status="queued", stage="queued", error=None)
+    update(job_id, status="queued", stage="queued", error=None, cancel_requested=False, progress=None)
     _queue.put(job_id)
     return _queue.qsize()
 
@@ -190,6 +234,13 @@ def _loop() -> None:
             except Exception:
                 log.exception("cleanup failed")
         if job_id is None or _runner is None:
+            continue
+        try:
+            if load(job_id).get("status") != "queued":  # cancelled or deleted while waiting
+                _queue.task_done()
+                continue
+        except (JobNotFound, ValueError, OSError):
+            _queue.task_done()
             continue
         try:
             _runner(job_id)

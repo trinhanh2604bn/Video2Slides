@@ -136,11 +136,16 @@ def validate(path: Path) -> MediaInfo:
 
 
 def extract_audio(video: Path, out_wav: Path) -> Path:
-    """Extract mono 16 kHz PCM audio, the format Whisper expects."""
+    """Extract mono 16 kHz PCM audio, the format Whisper expects.
+
+    With AUDIO_NORMALIZE (default on) the loudness is normalised in the same FFmpeg pass
+    (EBU R128, single pass), which helps Whisper and its VAD with quiet recordings.
+    """
     out_wav.parent.mkdir(parents=True, exist_ok=True)
+    filters = ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] if settings.audio_normalize else []
     res = _run(
         ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(video),
-         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(out_wav)]
+         "-vn", *filters, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(out_wav)]
     )
     if res.returncode != 0 or not out_wav.exists() or out_wav.stat().st_size == 0:
         raise MediaError("Không tách được âm thanh từ video.")

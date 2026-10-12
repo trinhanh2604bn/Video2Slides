@@ -9,10 +9,13 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
 
 from .config import ALLOWED_WHISPER_MODELS, settings
+from .jobs import JobCancelled
 
 log = logging.getLogger(__name__)
 
@@ -115,8 +118,13 @@ def get_model(name: str | None = None):
         return _model
 
 
-def transcribe(audio_path: Path, language: str | None = None) -> Transcript:
-    """Transcribe a 16 kHz mono WAV file. ``language='auto'`` enables detection."""
+def transcribe(audio_path: Path, language: str | None = None,
+               progress: Callable[[float, float], None] | None = None) -> Transcript:
+    """Transcribe a 16 kHz mono WAV file. ``language='auto'`` enables detection.
+
+    ``progress(done_sec, total_sec)`` is called as segments are decoded (at most every
+    ~2 s); it may raise (e.g. to cancel the job), which stops decoding immediately.
+    """
     lang = language or settings.default_language
     lang_arg = None if lang == "auto" else lang
     model = get_model()
@@ -129,13 +137,18 @@ def transcribe(audio_path: Path, language: str | None = None) -> Transcript:
                 vad_filter=True,
                 condition_on_previous_text=False,
             )
-            segments = [
-                Segment(round(s.start, 2), round(s.end, 2), s.text.strip())
-                for s in segments_iter
-                if s.text and s.text.strip()
-            ]
+            segments = []
+            last_report = 0.0
+            for s in segments_iter:  # decoding happens lazily while iterating
+                if s.text and s.text.strip():
+                    segments.append(Segment(round(s.start, 2), round(s.end, 2), s.text.strip()))
+                if progress and time.monotonic() - last_report >= 2:
+                    last_report = time.monotonic()
+                    progress(min(s.end, info.duration), info.duration)
         except MemoryError as exc:
             raise TranscriptionError("Không đủ bộ nhớ khi nhận dạng giọng nói.") from exc
+        except JobCancelled:
+            raise
         except Exception as exc:
             log.exception("Transcription failed")
             raise TranscriptionError(f"Nhận dạng giọng nói thất bại: {exc}") from exc

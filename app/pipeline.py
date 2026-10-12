@@ -13,7 +13,7 @@ import logging
 import time
 from pathlib import Path
 
-from . import config, jobs
+from . import config, jobs, preview
 from .ai import AIError, OutlineRequest, Presentation, get_provider
 from .illustrations import (
     IllustrationOutcome, IllustrationService, ImageGenerationError, apply_illustrations, get_image_provider,
@@ -23,6 +23,7 @@ from .illustrations.planner import image_cap
 from .pptx_engine import FrameRef, build_pptx, validate_pptx
 from .transcribe import Transcript, TranscriptionError, transcribe
 from .video import MediaError, extract_audio, extract_frames
+from .sysinfo import peak_memory_mb
 
 log = logging.getLogger(__name__)
 
@@ -61,13 +62,21 @@ def run_job(job_id: str) -> None:
             )
             if not transcript_json.exists():
                 audio = extract_audio(video, d / "audio.wav")
+                jobs.check_cancel(job_id)
                 # 3. Speech recognition
                 jobs.set_stage(job_id, "transcribing")
+
+                def on_progress(done: float, total: float) -> None:
+                    jobs.check_cancel(job_id)
+                    jobs.update(job_id, progress={"stage": "transcribing", "done_sec": round(done, 1),
+                                                  "total_sec": round(total, 1)})
+
                 try:
-                    transcript = transcribe(audio, opts.get("language"))
+                    transcript = transcribe(audio, opts.get("language"), progress=on_progress)
                 finally:
                     audio.unlink(missing_ok=True)
                 transcript.save(d)
+                jobs.update(job_id, progress=None)
         transcript = Transcript.from_json(json.loads(transcript_json.read_text(encoding="utf-8")))
         frame_refs = [
             FrameRef(d / "frames" / f["file"], float(f["timestamp"]))
@@ -76,6 +85,7 @@ def run_job(job_id: str) -> None:
         ]
 
         # 4. AI outline (cached)
+        jobs.check_cancel(job_id)
         jobs.set_stage(job_id, "analyzing")
         outline_file = d / "outline.json"
         provider = get_provider()
@@ -102,6 +112,7 @@ def run_job(job_id: str) -> None:
             apply_illustrations(pres, set(outcome.images))
 
         # 6. Slides
+        jobs.check_cancel(job_id)
         jobs.set_stage(job_id, "generating")
         out = output_path(d)
         warnings = build_pptx(pres, out, opts.get("style") or "professional", frame_refs,
@@ -113,6 +124,7 @@ def run_job(job_id: str) -> None:
         if not report.ok:
             out.unlink(missing_ok=True)
             raise RuntimeError("Tệp PowerPoint tạo ra không hợp lệ: " + "; ".join(report.errors[:3]))
+        preview_count = _render_previews(d, out)
 
         notices = []
         if not provider.is_llm:
@@ -140,9 +152,18 @@ def run_job(job_id: str) -> None:
                 "notices": notices,
                 "processing_seconds": round(time.time() - (job.get("started_at") or time.time()), 1),
                 "illustrations": outcome.summary() if outcome else None,
+                "preview_slides": preview_count,
+                "peak_memory_mb": peak_memory_mb(),
             },
         )
-    except (MediaError, TranscriptionError, AIError, ImageGenerationError) as exc:
+    except jobs.JobCancelled:
+        _cancelled(job_id)
+    except ImageGenerationError as exc:
+        if exc.code == "cancelled":
+            _cancelled(job_id)
+        else:
+            _fail(job_id, str(exc))
+    except (MediaError, TranscriptionError, AIError) as exc:
         _fail(job_id, str(exc))
     except Exception as exc:
         log.exception("job %s failed", job_id)
@@ -173,7 +194,8 @@ def _illustrate(job_id: str, d: Path, pres: Presentation, opts: dict, density: s
     else:
         # Budgets, daily/monthly limits and the kill switch are enforced inside run() before any
         # GPU submit; images already generated for this job are reused without touching the GPU.
-        service = IllustrationService(d, provider, progress=lambda p: jobs.update(job_id, illustrations=p))
+        service = IllustrationService(d, provider, progress=lambda p: jobs.update(job_id, illustrations=p),
+                                      should_cancel=lambda: bool(jobs.load(job_id).get("cancel_requested")))
         outcome = service.run(plan)
     if outcome.failed and s.image_on_failure != "skip":
         first = outcome.failed[0]["message"]
@@ -190,6 +212,25 @@ def _illustration_notices(outcome: IllustrationOutcome) -> list[str]:
     if outcome.failed:
         notes.append(f"{len(outcome.failed)} ảnh minh họa AI không tạo được; các slide đó dùng bố cục không có ảnh AI.")
     return notes
+
+
+def _render_previews(d: Path, pptx: Path) -> int:
+    """Best effort: slide images for the in-app preview (never fails the job)."""
+    if not preview.engine():
+        return 0
+    try:
+        return len(preview.render_previews(d, pptx))
+    except preview.PreviewError as exc:
+        log.warning("preview rendering skipped: %s", exc)
+        return 0
+
+
+def _cancelled(job_id: str) -> None:
+    try:
+        jobs.update(job_id, status="cancelled", finished_at=time.time(), cancel_requested=False, progress=None,
+                    error="Đã hủy theo yêu cầu. Bấm 'Thử lại' để tiếp tục (các bước đã xong được giữ lại).")
+    except jobs.JobNotFound:
+        pass
 
 
 def _fail(job_id: str, message: str) -> None:

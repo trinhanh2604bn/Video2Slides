@@ -93,10 +93,12 @@ def prune_cache() -> int:
 
 class IllustrationService:
     def __init__(self, job_dir: Path, provider: ImageGenerationProvider,
-                 progress: Callable[[dict], None] | None = None, sleep: Callable[[float], None] = time.sleep):
+                 progress: Callable[[dict], None] | None = None, sleep: Callable[[float], None] = time.sleep,
+                 should_cancel: Callable[[], bool] | None = None):
         self.dir = job_dir / "illustrations"
         self.provider = provider
         self.progress = progress or (lambda _: None)
+        self.should_cancel = should_cancel or (lambda: False)
         self.sleep = sleep
         self.dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,6 +173,13 @@ class IllustrationService:
         deadline = time.monotonic() + s.image_batch_timeout_sec
         errors: dict[str, int] = {}
         while pending:
+            if self.should_cancel():
+                # Stop paying for work nobody will use; finished images stay cached for a retry.
+                for sid in list(pending):
+                    self.provider.cancel(manifest[sid]["job_ref"])
+                    manifest[sid].update(state="planned", job_ref=None)
+                self._save(manifest)
+                raise ImageGenerationError("Đã hủy theo yêu cầu.", "cancelled")
             if time.monotonic() >= deadline:
                 for sid, req in list(pending.items()):
                     self.provider.cancel(manifest[sid]["job_ref"])  # stop paying for abandoned work

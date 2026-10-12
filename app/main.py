@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -17,7 +18,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import jobs
+from . import jobs, preview
 from .ai import recommend_slide_count
 from .config import SUPPORTED_LANGUAGES, settings
 from .illustrations import usage as image_usage
@@ -65,7 +66,7 @@ def _load_job(job_id: str) -> dict:
 def _public(job: dict) -> dict:
     """Job fields that are safe to return to the browser."""
     keys = ("id", "status", "stage", "stage_times", "created_at", "started_at", "finished_at",
-            "filename", "options", "media", "error", "result", "illustrations")
+            "filename", "options", "media", "error", "result", "illustrations", "progress", "cancel_requested")
     out = {k: job.get(k) for k in keys}
     src = job.get("source") or {"type": "upload"}
     out["source"] = {k: src.get(k) for k in ("type", "platform", "url", "title", "thumbnail") if k in src}
@@ -104,6 +105,7 @@ def public_config() -> dict:
         "ai_provider": _active_provider_name(),
         "password_required": bool(settings.app_password),
         "whisper_model": settings.whisper_model,
+        "preview_engine": preview.engine(),
         "ai_images": _ai_images_config(),
         "url_import": {
             "enabled": settings.url_import_enabled,
@@ -147,13 +149,20 @@ def create_job(
     job_id, d = jobs.new_job(options, display)
     target = d / INPUT_NAME
     written = 0
+    digest = hashlib.sha256()
     try:
         with target.open("wb") as fh:
             while chunk := file.file.read(CHUNK):
                 written += len(chunk)
                 if written > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail=f"Tệp vượt quá {settings.max_upload_mb} MB.")
+                digest.update(chunk)
                 fh.write(chunk)
+        content_hash = digest.hexdigest()
+        if existing := jobs.find_active_duplicate(content_hash, options):
+            # Double click / resubmit of a video that is already being processed: follow that job.
+            jobs.delete(job_id)
+            return {"job_id": existing, "queue_position": jobs.pending_count(), "duplicate": True}
         info = validate(target)
     except MediaError as exc:
         jobs.delete(job_id)
@@ -171,7 +180,7 @@ def create_job(
     if not options["slide_count"]:
         # Rough recommendation; the AI refines it from the transcript.
         options["recommended_slides"] = recommend_slide_count(info.duration, int(info.duration * 2.3))
-    jobs.update(job_id, options=options, media={
+    jobs.update(job_id, options=options, content_hash=content_hash, media={
         "duration": round(info.duration, 2), "width": info.width, "height": info.height,
         "video_codec": info.video_codec, "audio_codec": info.audio_codec, "size_bytes": info.size_bytes,
     })
@@ -289,8 +298,8 @@ def get_job(job_id: str) -> dict:
 @app.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_access)], status_code=202)
 def retry_job(job_id: str) -> dict:
     job = _load_job(job_id)
-    if job["status"] != "failed":
-        raise HTTPException(status_code=409, detail="Chỉ có thể thử lại công việc bị lỗi.")
+    if job["status"] not in ("failed", "cancelled"):
+        raise HTTPException(status_code=409, detail="Chỉ có thể thử lại công việc bị lỗi hoặc đã hủy.")
     d = jobs.job_dir(job_id)
     has_input = (d / INPUT_NAME).exists() or (d / "transcript.json").exists()
     from_url = (job.get("source") or {}).get("type") == "url"
@@ -303,6 +312,47 @@ def retry_job(job_id: str) -> dict:
         url_service.submit_download(job_id)
         return {"job_id": job_id, "queue_position": url_service.pending_downloads()}
     return {"job_id": job_id, "queue_position": jobs.enqueue(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/cancel", dependencies=[Depends(require_access)])
+def cancel_job(job_id: str) -> dict:
+    """Stop a queued or running job. Running jobs stop at the next safe point (GPU work is cancelled)."""
+    job = _load_job(job_id)
+    if job["status"] not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="Công việc không còn đang chạy.")
+    job = jobs.request_cancel(job_id)
+    return {"status": job["status"], "cancel_requested": bool(job.get("cancel_requested"))}
+
+
+@app.get("/api/jobs/{job_id}/preview", dependencies=[Depends(require_access)])
+def list_previews(job_id: str) -> dict:
+    """Slide images rendered by PowerPoint/LibreOffice (rendered on demand when missing)."""
+    job = _load_job(job_id)
+    d = jobs.job_dir(job_id)
+    pptx = output_path(d)
+    if job["status"] != "done" or not pptx.exists():
+        raise HTTPException(status_code=404, detail="Bản trình chiếu chưa sẵn sàng.")
+    if not preview.engine():
+        return {"available": False, "engine": "", "slides": [],
+                "reason": "Máy chưa cài PowerPoint hoặc LibreOffice nên không tạo được ảnh xem trước."}
+    try:
+        files = preview.render_previews(d, pptx)
+    except preview.PreviewError as exc:
+        return {"available": False, "engine": preview.engine(), "slides": [], "reason": str(exc)}
+    version = int(pptx.stat().st_mtime)
+    return {"available": True, "engine": preview.engine(),
+            "slides": [f"/api/jobs/{job_id}/preview/{i}.png?v={version}" for i in range(1, len(files) + 1)]}
+
+
+@app.get("/api/jobs/{job_id}/preview/{number}.png", dependencies=[Depends(require_access)])
+def get_preview(job_id: str, number: int):
+    _load_job(job_id)
+    if not 1 <= number <= 99:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh xem trước.")
+    path = preview.preview_dir(jobs.job_dir(job_id)) / f"slide-{number:02d}.png"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh xem trước.")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.get("/api/jobs/{job_id}/transcript", dependencies=[Depends(require_access)])

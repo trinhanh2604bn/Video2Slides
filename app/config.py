@@ -71,6 +71,7 @@ class Settings:
     frame_width: int = field(default_factory=lambda: _int("FRAME_WIDTH", 1280))
     ffmpeg_timeout_sec: int = field(default_factory=lambda: _int("FFMPEG_TIMEOUT_SEC", 180))
     max_queue_size: int = field(default_factory=lambda: _int("MAX_QUEUE_SIZE", 3))
+    audio_normalize: bool = field(default_factory=lambda: _bool("AUDIO_NORMALIZE", True))
 
     # Speech recognition
     whisper_model: str = field(default_factory=lambda: os.environ.get("WHISPER_MODEL", "base"))
