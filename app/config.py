@@ -63,6 +63,8 @@ class Settings:
         default_factory=lambda: Path(os.environ.get("MODEL_CACHE_DIR", BASE_DIR / ".cache" / "models"))
     )
     job_ttl_hours: float = field(default_factory=lambda: _float("JOB_TTL_HOURS", 24))
+    # true = finished presentations stay in the library (Reading Mode, re-download); videos are always deleted
+    keep_finished_presentations: bool = field(default_factory=lambda: _bool("KEEP_FINISHED_PRESENTATIONS", True))
 
     # Upload / media limits
     max_upload_mb: int = field(default_factory=lambda: _int("MAX_UPLOAD_MB", 80))
@@ -84,6 +86,9 @@ class Settings:
     ai_provider: str = field(default_factory=lambda: os.environ.get("AI_PROVIDER", "auto"))
     gemini_api_key: str = field(default_factory=lambda: os.environ.get("GEMINI_API_KEY", ""))
     gemini_model: str = field(default_factory=lambda: os.environ.get("GEMINI_MODEL", "gemini-flash-latest"))
+    # Comma-separated models tried in order when the main model is overloaded (HTTP 503)
+    gemini_fallback_models: tuple[str, ...] = field(default_factory=lambda: tuple(
+        m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-flash-lite-latest").split(",") if m.strip()))
     ai_timeout_sec: int = field(default_factory=lambda: _int("AI_TIMEOUT_SEC", 120))
     ai_max_attempts: int = field(default_factory=lambda: _int("AI_MAX_ATTEMPTS", 3))
 
@@ -140,6 +145,21 @@ class Settings:
     image_max_regenerations_per_job: int = field(default_factory=lambda: _int("IMAGE_MAX_REGENERATIONS_PER_JOB", 10))
     # Enables /api/admin/* (usage report, kill switch). Empty = admin API disabled.
     admin_token: str = field(default_factory=lambda: os.environ.get("ADMIN_TOKEN", ""))
+
+    # Default slide layout: reading = content + explanation panel, presentation = full-width slides
+    default_layout_mode: str = field(default_factory=lambda: os.environ.get("DEFAULT_LAYOUT_MODE", "reading").lower())
+
+    # Google Slides output (OAuth "Desktop app" client; the JSON is downloaded from Google Cloud Console)
+    google_slides_enabled: bool = field(default_factory=lambda: _bool("GOOGLE_SLIDES_ENABLED", True))
+    google_oauth_client_file: Path = field(default_factory=lambda: Path(os.environ.get(
+        "GOOGLE_OAUTH_CLIENT_FILE", Path(os.environ.get("DATA_DIR", BASE_DIR / "data")) / "google" / "client_secret.json")))
+    google_http_timeout_sec: int = field(default_factory=lambda: _int("GOOGLE_HTTP_TIMEOUT_SEC", 120))
+    google_max_attempts: int = field(default_factory=lambda: max(1, _int("GOOGLE_MAX_ATTEMPTS", 4)))
+
+    @property
+    def google_dir(self) -> Path:
+        """Tokens live outside the job folders, so job cleanup never deletes them."""
+        return self.data_dir / "google"
 
     @property
     def illustrations_dir(self) -> Path:

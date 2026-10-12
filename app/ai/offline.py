@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from .base import OutlineProvider, OutlineRequest, recommend_slide_count
-from .schema import Item, Presentation, Slide
+from .schema import Item, Presentation, Slide, TimeRange
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 LABELS = {
@@ -65,7 +65,8 @@ class OfflineProvider(OutlineProvider):
                 layout, visual, ts = "bullets", "none", [start]
             content.append(
                 Slide(slide_number=idx + 2, title=ch_title, layout_type=layout, key_points=points,
-                      speaker_notes=text[:2500], visual_type=visual, source_timestamps=ts)
+                      speaker_notes=text[:2500], visual_type=visual, source_timestamps=ts,
+                      source_ranges=[TimeRange(start=start, end=end)])
             )
 
         slides.append(

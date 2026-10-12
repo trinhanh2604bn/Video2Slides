@@ -65,7 +65,8 @@ class MockImageProvider(ImageGenerationProvider):
 
 def _gradient(req: ImageRequest) -> bytes:
     h = hashlib.sha256(f"{req.prompt}:{req.seed}".encode()).digest()
-    c1, c2 = tuple(h[0:3]), tuple(h[3:6])
+    # Dark-to-light gradient: always enough contrast to pass the blank-image check (stddev >= 3).
+    c1, c2 = tuple(v // 3 for v in h[0:3]), tuple(170 + v // 3 for v in h[3:6])
     im = Image.new("RGB", (req.width, req.height), c1)
     draw = ImageDraw.Draw(im)
     for x in range(0, req.width, 8):

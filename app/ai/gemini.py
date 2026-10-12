@@ -23,14 +23,19 @@ API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:gener
 class GeminiProvider(OutlineProvider):
     name = "gemini"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, client: httpx.Client | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, client: httpx.Client | None = None,
+                 fallback_models: tuple[str, ...] | None = None):
         self.api_key = api_key or settings.gemini_api_key
         self.model = model or settings.gemini_model
+        # Used in order when the current model is overloaded (HTTP 503) instead of failing the job.
+        fallbacks = settings.gemini_fallback_models if fallback_models is None else fallback_models
+        self.fallback_models = tuple(m for m in fallbacks if m and m != self.model)
+        self.used_model = self.model
         if not self.api_key:
             raise AIError("Thiếu GEMINI_API_KEY. Hãy thêm khóa vào tệp .env (hoặc Secrets của máy chủ đám mây).")
         self._client = client
 
-    def _post(self, contents: list[dict], with_image_prompt: bool = False) -> str:
+    def _post(self, contents: list[dict], with_image_prompt: bool = False, model: str | None = None) -> str:
         body = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": contents,
@@ -44,7 +49,7 @@ class GeminiProvider(OutlineProvider):
         try:
             # Key goes in a header, never in the URL, so it can't leak into logs.
             resp = client.post(
-                API_URL.format(model=self.model),
+                API_URL.format(model=model or self.model),
                 headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
                 json=body,
             )
@@ -61,7 +66,8 @@ class GeminiProvider(OutlineProvider):
         if resp.status_code in (401, 403):
             raise AIError("GEMINI_API_KEY không hợp lệ hoặc không có quyền truy cập model.")
         if resp.status_code == 404:
-            raise AIError(f"Model Gemini '{self.model}' không tồn tại. Kiểm tra biến GEMINI_MODEL.")
+            raise AIError(f"Model Gemini '{model or self.model}' không tồn tại hoặc không còn dùng được. "
+                          "Kiểm tra biến GEMINI_MODEL / GEMINI_FALLBACK_MODELS.")
         if resp.status_code >= 400:
             msg = _error_message(resp)
             raise AIError(f"Gemini trả lỗi HTTP {resp.status_code}: {msg}")
@@ -80,13 +86,20 @@ class GeminiProvider(OutlineProvider):
     def generate(self, req: OutlineRequest) -> Presentation:
         contents = [{"role": "user", "parts": [{"text": build_user_prompt(req)}]}]
         last_error = "unknown"
-        for attempt in range(1, settings.ai_max_attempts + 1):
+        models = [self.model, *self.fallback_models]
+        model = models.pop(0)
+        attempts = settings.ai_max_attempts + len(self.fallback_models)
+        for attempt in range(1, attempts + 1):
             try:
-                raw = self._post(contents, with_image_prompt=req.max_illustrations > 0)
+                raw = self._post(contents, with_image_prompt=req.max_illustrations > 0, model=model)
             except _Retryable as exc:
                 last_error = str(exc)
-                log.warning("Gemini attempt %d failed: %s", attempt, exc)
-                if attempt < settings.ai_max_attempts:
+                log.warning("Gemini attempt %d (%s) failed: %s", attempt, model, exc)
+                if exc.status == 503 and models:
+                    model = models.pop(0)  # overloaded: switch model right away instead of waiting
+                    log.warning("Gemini model overloaded; falling back to %s", model)
+                    continue
+                if attempt < attempts:
                     # Exponential backoff with jitter; longer wait for rate limits.
                     base = 8 if exc.status == 429 else 2
                     time.sleep(base * (2 ** (attempt - 1)) + random.random())
@@ -106,9 +119,10 @@ class GeminiProvider(OutlineProvider):
 
             if req.title_hint:
                 pres.presentation_title = req.title_hint
+            self.used_model = model
             return pres
 
-        raise AIError(f"Không tạo được dàn ý sau {settings.ai_max_attempts} lần thử. {last_error}")
+        raise AIError(f"Không tạo được dàn ý sau {attempts} lần thử. {last_error}")
 
 
 class _Retryable(Exception):

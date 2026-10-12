@@ -1,7 +1,7 @@
 [project]
 name = "video2slides"
 version = "0.1.0"
-description = "Convert MP4 videos into editable, professionally designed PowerPoint presentations."
+description = "Convert videos into editable Google Slides / PowerPoint presentations with per-slide reading notes."
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi>=0.115,<1.0",
@@ -12,6 +12,8 @@ dependencies = [
     "faster-whisper>=1.1,<2",
     "python-pptx>=1.0,<2",
     "Pillow>=10.3",
+    # YouTube / Facebook link import (YOUTUBE_RETRIEVAL / FACEBOOK_RETRIEVAL=ytdlp); [default] adds the JS solver
+    "yt-dlp[default]>=2025.10",
 ]
 
 [project.optional-dependencies]

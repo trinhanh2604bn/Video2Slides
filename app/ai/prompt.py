@@ -17,7 +17,7 @@ STRICT RULES
 2. Summarize and restructure. Do NOT copy long transcript sentences. Slide text
    must be short: titles <= 8 words, bullets <= 14 words, max 5 bullets.
 3. Fix speech-recognition errors only when the intended word is obvious.
-4. Put fuller explanations in speaker_notes (2-5 sentences, natural spoken style).
+4. Put fuller explanations in speaker_notes and reading_notes (rules 9-11), not on the slide.
 5. Choose layout_type from the CONTENT, and vary layouts across the deck:
    - title: first slide only (title + subtitle summarizing the video).
    - agenda: second slide for decks of 8+ slides; key_points = the main parts, in order (3-6, short).
@@ -44,7 +44,23 @@ STRICT RULES
    two_column/cards/concept, "icon" for stats, otherwise "none". visual_description briefly
    says what the visual should show.
 7. source_timestamps: seconds (numbers) in the transcript that support the slide.
+   source_ranges: the transcript spans the slide is based on, as {start, end} seconds
+   (use the line start times; 1-3 ranges per slide).
 8. Every slide must have content; no empty slides.
+
+READING NOTES (a reader must understand each slide WITHOUT watching the video):
+9. brief_explanation: 1-2 short sentences (<= 35 words) shown in a small panel beside the
+   slide. It says what the slide means or why it matters. Do not repeat the bullets.
+10. reading_notes, written in the same language as the slides:
+   - summary: one sentence stating the main idea of the slide.
+   - detailed_explanation: 80-180 words in 2-3 short paragraphs separated by a blank line.
+     Explain the ideas behind the slide in plain, natural language, as the speaker
+     explained them: why, how, what it means. Expand on the bullets instead of copying
+     them, define terms the slide uses, and keep important terminology as said.
+   - examples: 0-3 concrete examples, ONLY ones the speaker actually gave. Empty list if none.
+   - key_takeaway: one sentence the reader should remember (may be empty for title/agenda/section).
+   The faithfulness rule applies fully: no new facts, numbers or examples beyond the transcript.
+11. speaker_notes: what the presenter says aloud for this slide (2-5 sentences, spoken style).
 """
 
 
@@ -60,7 +76,7 @@ def build_user_prompt(req: OutlineRequest) -> str:
     lines = [f"[{s.start:.1f}] {s.text}" for s in t.segments]
     frames = ", ".join(f"{ts:.1f}" for ts in req.frame_timestamps) or "none"
 
-    return f"""Write all slide text and speaker notes in {lang_name}.
+    return f"""Write all slide text, speaker notes and reading notes in {lang_name}.
 {count_rule}
 Presentation style requested: {req.style}.
 {"Use this presentation title: " + req.title_hint if req.title_hint else "Derive a clear presentation title from the content."}

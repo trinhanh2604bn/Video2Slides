@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Video2Slides</title>
-  <meta name="description" content="Chuyển video MP4 thành bài trình chiếu PowerPoint chuyên nghiệp bằng AI">
+  <meta name="description" content="Chuyển video thành bài trình chiếu Google Slides / PowerPoint chuyên nghiệp kèm phần giải thích bằng AI">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232F80ED'/><rect x='7' y='9' width='18' height='12' rx='2' fill='white'/><rect x='14' y='22' width='4' height='3' fill='white'/></svg>">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -16,7 +16,14 @@
       </span>
       <span>Video2Slides</span>
     </div>
-    <span class="provider" id="providerBadge" hidden></span>
+    <div class="top-actions">
+      <button type="button" class="btn ghost top-btn" id="libraryBtn">Bài đã tạo</button>
+      <span class="provider" id="providerBadge" hidden></span>
+      <button type="button" class="google-chip" id="googleChip" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2" fill="#F4B400"/><rect x="8" y="9" width="8" height="6" rx="1" fill="#fff"/></svg>
+        <span id="googleChipText">Kết nối Google</span>
+      </button>
+    </div>
   </header>
 
   <main class="container">
@@ -34,7 +41,7 @@
     <section id="uploadView" hidden>
       <div class="hero">
         <h1>Biến video thành bài trình chiếu chuyên nghiệp</h1>
-        <p>Tải lên video MP4 hoặc dán liên kết YouTube/Facebook — hệ thống sẽ nghe nội dung, tóm tắt ý chính và thiết kế tệp PowerPoint có thể chỉnh sửa.</p>
+        <p>Tải lên video MP4 hoặc dán liên kết YouTube/Facebook — hệ thống sẽ nghe nội dung, tóm tắt ý chính, thiết kế bài Google Slides / PowerPoint có thể chỉnh sửa và viết phần giải thích cho từng slide.</p>
       </div>
 
       <form id="uploadForm" class="card" novalidate>
@@ -122,6 +129,35 @@
             <legend>Phong cách</legend>
             <div class="styles" id="styleOptions"></div>
           </fieldset>
+          <fieldset class="field wide">
+            <legend>Bố cục slide</legend>
+            <div class="mode-opts" id="layoutModeOptions">
+              <label class="mode-opt">
+                <input type="radio" name="layoutMode" value="reading" checked>
+                <span class="mode-card">
+                  <span class="mode-thumb reading" aria-hidden="true"><i></i><b></b></span>
+                  <span class="style-name">Chế độ đọc</span>
+                  <span class="style-desc">Nội dung bên trái, khung giải thích ngắn bên phải — dễ hiểu khi đọc một mình</span>
+                </span>
+              </label>
+              <label class="mode-opt">
+                <input type="radio" name="layoutMode" value="presentation">
+                <span class="mode-card">
+                  <span class="mode-thumb" aria-hidden="true"><i></i></span>
+                  <span class="style-name">Chế độ trình chiếu</span>
+                  <span class="style-desc">Slide toàn khổ truyền thống; giải thích nằm trong ghi chú người thuyết trình</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="field wide" id="googleField" hidden>
+            <legend>Google Slides</legend>
+            <label class="toggle">
+              <input type="checkbox" id="googleCheck">
+              <span>Tự động tạo bản Google Slides gốc (chỉnh sửa được) trong Google Drive của bạn</span>
+            </label>
+            <small id="googleHint"></small>
+          </fieldset>
           <fieldset class="field wide ai-images" id="aiImagesField" hidden>
             <legend>Ảnh minh họa AI</legend>
             <div class="ai-row">
@@ -190,8 +226,17 @@
         <p class="muted small" id="resultIllus" hidden></p>
         <div class="notice" id="resultNotice" hidden></div>
         <div class="layouts" id="resultLayouts"></div>
-        <div class="row">
-          <button class="btn primary lg" id="downloadBtn" type="button">Tải PowerPoint (.pptx)</button>
+        <div class="google-box" id="googleBox" hidden>
+          <div class="google-box-text">
+            <strong id="googleBoxTitle"></strong>
+            <span class="muted small" id="googleBoxDetail"></span>
+          </div>
+          <div class="row" id="googleBoxActions"></div>
+        </div>
+        <div class="row result-actions">
+          <a class="btn primary lg" id="openGoogleBtn" target="_blank" rel="noopener noreferrer" hidden>Mở trong Google Slides</a>
+          <button class="btn lg" id="readBtn" type="button">Chế độ đọc</button>
+          <button class="btn ghost" id="downloadBtn" type="button">Tải PowerPoint (.pptx)</button>
           <button class="btn ghost" id="transcriptBtn" type="button">Xem bản ghi lời nói</button>
           <button class="btn ghost" id="newBtn" type="button">Tạo bài mới</button>
         </div>
@@ -219,9 +264,51 @@
         <div id="transcriptBody" class="transcript-body"></div>
       </div>
     </section>
+
+    <!-- Reading Mode: slide (~65%) + synchronized explanation (~35%) -->
+    <section id="readingView" class="reading" hidden>
+      <div class="reader-bar">
+        <button type="button" class="btn ghost" id="readerBack">&#8592; Quay lại</button>
+        <div class="reader-title">
+          <strong id="readerTitle"></strong>
+          <span class="muted small" id="readerCounter" aria-live="polite"></span>
+        </div>
+        <div class="row reader-tools">
+          <a class="btn ghost" id="readerGoogle" target="_blank" rel="noopener noreferrer" hidden>Mở Google Slides</a>
+          <button type="button" class="btn ghost" id="readerCheck" hidden>Kiểm tra đồng bộ</button>
+          <button type="button" class="btn ghost" id="readerFull" title="Toàn màn hình (F)">Toàn màn hình</button>
+        </div>
+      </div>
+      <div class="notice" id="readerNotice" hidden></div>
+      <div class="reader">
+        <div class="reader-left">
+          <div class="reader-stage" id="readerStage">
+            <img id="readerImg" alt="" hidden>
+            <div class="slide-fallback" id="readerFallback" hidden></div>
+            <button class="nav prev" id="readerPrev" type="button" aria-label="Slide trước">&#8249;</button>
+            <button class="nav next" id="readerNext" type="button" aria-label="Slide sau">&#8250;</button>
+          </div>
+          <div class="reader-progress" aria-hidden="true"><span id="readerProgress"></span></div>
+          <div class="preview-strip reader-strip" id="readerStrip" role="list" aria-label="Danh sách slide"></div>
+        </div>
+        <article class="reader-notes" id="readerNotes" tabindex="0" aria-live="polite"></article>
+      </div>
+    </section>
+
+    <!-- Library of finished presentations -->
+    <section id="libraryView" hidden>
+      <div class="card">
+        <div class="preview-head">
+          <h2>Bài trình chiếu đã tạo</h2>
+          <button type="button" class="btn ghost" id="libraryClose">Tạo bài mới</button>
+        </div>
+        <p class="muted small" id="libraryNote"></p>
+        <ul class="library-list" id="libraryList"></ul>
+      </div>
+    </section>
   </main>
 
-  <footer class="foot muted small">Video được xử lý trên máy chủ và tự động xóa sau khi hoàn tất. Chỉ xử lý nội dung bạn sở hữu hoặc được phép sử dụng.</footer>
+  <footer class="foot muted small">Video được xử lý trên máy của bạn và tự động xóa sau khi hoàn tất. Chỉ xử lý nội dung bạn sở hữu hoặc được phép sử dụng.</footer>
   <script src="app.js"></script>
 </body>
 </html>

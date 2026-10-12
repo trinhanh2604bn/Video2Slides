@@ -1,19 +1,24 @@
 # Video2Slides
 
-Convert an MP4 video into an editable, professionally designed PowerPoint deck.
+Convert a video (MP4 upload or a YouTube / Facebook link) into an editable, professionally designed
+presentation — **native Google Slides** in your own Drive and/or PowerPoint — with a detailed explanation
+for every slide (speaker notes + a synchronized side-by-side Reading Mode).
 
 **Runs locally on Windows** (no Replit, no domain needed): double-click `install.bat` once, then
 `start.bat`. Vietnamese user guide: [docs/HUONG_DAN_SU_DUNG_VI.md](docs/HUONG_DAN_SU_DUNG_VI.md).
 
 ```
-MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper (local CPU)
-          ─► Gemini (structured outline, JSON schema) ─► python-pptx design engine ─► .pptx download
-                                  │ optional (AI_IMAGES_ENABLED)
-                                  └► illustration planner ─► self-hosted SDXL on Modal GPU ─► images in the deck
+MP4 upload / YouTube·Facebook link (yt-dlp)
+  ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper (local CPU, timestamps)
+  ─► Gemini (outline + per-slide reading notes, JSON schema)
+  ─► [illustration planner ─► self-hosted SDXL on Modal GPU]            (optional, AI_IMAGES_ENABLED)
+  ─► python-pptx design engine (Reading or Presentation layout) ─► .pptx
+  ─► [Drive upload+conversion ─► Slides API validation + speaker-notes sync] ─► native Google Slides  (optional)
+  ─► Reading Mode (slide 65 % | explanation 35 %, app-owned slide index) + library (SQLite)
 ```
 
 * **Single local process**: FastAPI serves the API and a plain HTML/JS frontend on `127.0.0.1`.
-  No database, Redis or external storage — job state is JSON on disk.
+  No Redis or external storage — job state is JSON on disk, the library of finished decks is one SQLite file.
 * **Free/open-source by default**: FFmpeg, faster-whisper and python-pptx run locally. The only
   external call is Gemini (free tier), and the app still works without it in a reduced offline mode.
 
@@ -30,6 +35,11 @@ MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper 
 | Output | 16:9, native editable text and shapes, embedded video frames, speaker notes with source timestamps, overflow prevention, post-build validation |
 | Jobs | Stage-based progress with measured values only (decoded audio seconds, finished images), cancel, duplicate-upload detection, retry reusing cached transcript/outline/images, auto-cleanup after `JOB_TTL_HOURS` |
 | AI illustrations (optional) | Gemini writes an English `image_prompt` per suitable slide; a planner applies one shared style per deck; a private SDXL 1.0 worker on Modal (L4, scale-to-zero, max 1 GPU) draws them; images are validated, cached and inserted beside editable text. Budgets, daily/monthly limits and a kill switch. Setup: [docs/AI_ILLUSTRATIONS_SETUP_VI.md](docs/AI_ILLUSTRATIONS_SETUP_VI.md) |
+| Reading notes | For every slide Gemini also writes a brief explanation (≤ 35 words), a detailed explanation (80–180 words), examples the speaker actually gave, a key takeaway and source time ranges. Older outlines / offline mode fall back to the transcript spans of the slide |
+| Layout modes | **Reading** (default): content on the left ~63 %, a short explanation panel on the right; dense diagrams (≥ 4 steps, ≥ 5 cards) stay full width. **Presentation**: classic full-width slides. Full narration always goes into the speaker notes |
+| Google Slides | OAuth (Desktop client, loopback + PKCE, scope `drive.file` only, token in `data/google/token.json`). The finished .pptx is uploaded with conversion to a native, editable Google Slides file, read back through the Slides API and validated (slide count, 16:9, pictures, titles); speaker notes are compared per slide and rewritten via `speakerNotesObjectId` when missing, then verified. Idempotent (Drive `appProperties`), never overwrites an existing presentation, retries 429/5xx, reuses the existing AI images. Setup: [docs/GOOGLE_SLIDES_SETUP_VI.md](docs/GOOGLE_SLIDES_SETUP_VI.md) |
+| Reading Mode | Slide image (local PowerPoint render, else cached Google thumbnail, else a text card) beside the explanation; prev/next, thumbnails, ← → / Home / End / F, swipe, fullscreen, counter, progress, timestamps, transcript excerpt; stacks on phones. A read-only "check sync" reports slides deleted/added/reordered or notes edited in Google Slides |
+| Library | "Bài đã tạo": reopen earlier decks in Reading Mode / Google Slides / re-download (`KEEP_FINISHED_PRESENTATIONS`) |
 | Security | Server-issued job IDs only (no user paths), no `shell=True`, upload size cap while streaming, optional shared password (`APP_PASSWORD`), API key sent in a header (never in URLs/logs) |
 
 ## Project layout
@@ -42,7 +52,11 @@ app/
   pipeline.py        stage orchestration with caching
   video.py           ffprobe/ffmpeg helpers
   transcribe.py      faster-whisper wrapper
-  ai/                schema, prompt, Gemini provider, offline fallback
+  ai/                schema, prompt, Gemini provider (with fallback models), offline fallback
+  reading.py         reading notes: transcript fallback, speaker-notes text, Reading Mode payload
+  library.py         SQLite library of finished presentations (outline, transcript, Google mapping)
+  google_slides/     OAuth (auth.py), REST client with retries (client.py), PPTX→Slides export, validation,
+                     speaker-notes sync, sync check, thumbnails (export.py)
   illustrations/     image provider interface, Modal SDXL + mock providers, planner, styles,
                      batch orchestration/cache, usage limits & kill switch
   pptx_engine/       themes, text fitting, layouts, validation
@@ -72,11 +86,21 @@ tests/                      pytest suite
 | `GET` | `/api/jobs/{id}/illustrations` | per-slide illustration status |
 | `GET` | `/api/jobs/{id}/illustrations/{slide_id}.jpg` | one generated illustration |
 | `POST` | `/api/jobs/{id}/illustrations/{slide_id}/regenerate` | redraw one image (new seed) and rebuild the deck |
+| `GET` | `/api/jobs/{id}/reading` | slides + explanations + image URLs for Reading Mode |
+| `POST` | `/api/jobs/{id}/google` | `{"new_copy": false}` create (or reuse) the Google Slides version in the background |
+| `POST` | `/api/jobs/{id}/google/check` | read-only comparison with the live Google Slides file |
+| `GET` | `/api/jobs/{id}/google/thumbnail/{n}.png` | slide thumbnail from Google (cached on disk) |
+| `GET` | `/api/google/status` | configured / connected / account (never tokens) |
+| `POST` | `/api/google/connect` | returns the Google consent URL (loopback redirect, PKCE) |
+| `GET` | `/api/google/oauth/callback` | OAuth redirect target |
+| `POST` | `/api/google/disconnect` | revoke access and delete the local token |
+| `GET` | `/api/library` | finished presentations |
 | `GET` | `/api/admin/images/usage` | GPU usage/limits (header `X-Admin-Token`, needs `ADMIN_TOKEN`) |
 | `POST` | `/api/admin/images/kill-switch` | `{"active": true}` stops new GPU work immediately |
 
-`POST /api/jobs` and `/api/videos/url/import` accept `ai_images` (bool) and `image_density`
-(`standard` / `high`).
+`POST /api/jobs` and `/api/videos/url/import` accept `ai_images` (bool), `image_density`
+(`standard` / `high`), `layout_mode` (`reading` / `presentation`) and `google_slides` (bool, needs a
+connected Google account).
 
 When `APP_PASSWORD` is set, every `/api/jobs*` call needs the header `X-App-Password`.
 
@@ -89,6 +113,12 @@ use its secret store instead. Main variables:
 |---|---|---|
 | `GEMINI_API_KEY` | – | Free key from Google AI Studio (see below). Without it the app uses the offline outline. |
 | `GEMINI_MODEL` | `gemini-flash-latest` | Any model your key can call, e.g. a specific Flash / Flash-Lite version |
+| `GEMINI_FALLBACK_MODELS` | `gemini-flash-lite-latest` | Comma list tried when the main model answers 503 (overloaded) |
+| `DEFAULT_LAYOUT_MODE` | `reading` | `reading` / `presentation` |
+| `YOUTUBE_RETRIEVAL` / `FACEBOOK_RETRIEVAL` | `off` (template: `ytdlp`) | `ytdlp` downloads links with yt-dlp; only for content you may process |
+| `GOOGLE_SLIDES_ENABLED` | `true` | Google Slides output (needs the OAuth client file) |
+| `GOOGLE_OAUTH_CLIENT_FILE` | `data/google/client_secret.json` | Desktop-app OAuth client JSON |
+| `KEEP_FINISHED_PRESENTATIONS` | `true` | keep finished decks for the library; videos are always deleted |
 | `AI_PROVIDER` | `auto` | `auto`, `gemini`, `offline` |
 | `WHISPER_MODEL` | `base` | `tiny` / `base` / `small` |
 | `DEFAULT_LANGUAGE` | `vi` | `vi`, `en`, `auto` |
@@ -190,6 +220,12 @@ after a redeploy (run `scripts/download_model.py` in the build command).
 ## Limitations
 
 * MVP limits: MP4 only, ≤ 80 MB, ≤ 10 minutes, ≤ 8 frames (all configurable).
+* Google Slides is produced by Drive's PPTX conversion. It keeps text, shapes, pictures and notes editable,
+  but the rendering can differ slightly from PowerPoint (font substitution, e.g. Segoe UI → a Google font,
+  line breaks). Each export is validated, not assumed identical.
+* Reading Mode shows the explanation generated with the deck. Edits made later in Google Slides are **not**
+  synchronised back; "Kiểm tra đồng bộ" only reports them, and the app never overwrites a Google file.
+* With the OAuth app in *Testing* status Google expires the login after 7 days (reconnect, or publish the app).
 * One job runs at a time; others wait (queue max `MAX_QUEUE_SIZE`).
 * The job queue is in-process: if the server restarts mid-job, that job is marked failed and
   can be retried (cached transcript is reused). It is not a durable queue.

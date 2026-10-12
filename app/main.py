@@ -14,17 +14,23 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import jobs, preview
-from .ai import recommend_slide_count
+from . import jobs, library, preview
+from .ai import Presentation, recommend_slide_count
 from .config import SUPPORTED_LANGUAGES, settings
+from .google_slides import GoogleError
+from .google_slides import auth as google_auth
+from .google_slides.export import check_sync, fetch_thumbnail
 from .illustrations import usage as image_usage
 from .illustrations.planner import DENSITIES
-from .pipeline import INPUT_NAME, output_path, run_job
+from .pipeline import INPUT_NAME, google_ready, load_outline, output_path, run_job, submit_google_export
 from .pptx_engine import THEMES
+from .pptx_engine.builder import LAYOUT_MODES
+from .reading import slide_payload, speaker_notes_text
+from .transcribe import Transcript
 from .url_import import service as url_service
 from .url_import.errors import UrlImportError
 from .video import MediaError, ffmpeg_available, validate
@@ -68,11 +74,25 @@ def _public(job: dict) -> dict:
     keys = ("id", "status", "stage", "stage_times", "created_at", "started_at", "finished_at",
             "filename", "options", "media", "error", "result", "illustrations", "progress", "cancel_requested")
     out = {k: job.get(k) for k in keys}
+    out["google"] = _public_google(job.get("google"))
     src = job.get("source") or {"type": "upload"}
     out["source"] = {k: src.get(k) for k in ("type", "platform", "url", "title", "thumbnail") if k in src}
     if job.get("status") == "queued":
         out["queue_length"] = jobs.pending_count()
     return out
+
+
+def _public_google(g: dict | None) -> dict | None:
+    """Google export state without internal details (no slide id mapping, never any token)."""
+    if not g:
+        return None
+    meta = g.get("meta") or {}
+    return {
+        "state": g.get("state"), "step": g.get("step"), "error": g.get("error"), "code": g.get("code"),
+        "url": meta.get("url"), "title": meta.get("title"), "created_at": meta.get("created_at"),
+        "notes": meta.get("notes"), "warnings": (meta.get("validation") or {}).get("warnings") or [],
+        "slide_count": (meta.get("validation") or {}).get("slide_count"),
+    }
 
 
 def _safe_display_name(name: str | None) -> str:
@@ -107,6 +127,10 @@ def public_config() -> dict:
         "whisper_model": settings.whisper_model,
         "preview_engine": preview.engine(),
         "ai_images": _ai_images_config(),
+        "layout_modes": list(LAYOUT_MODES),
+        "default_layout_mode": settings.default_layout_mode if settings.default_layout_mode in LAYOUT_MODES
+        else "reading",
+        "google": google_auth.status(),
         "url_import": {
             "enabled": settings.url_import_enabled,
             "max_duration_sec": settings.url_max_duration_sec,
@@ -137,6 +161,8 @@ def create_job(
     slide_count: int = Form(default=0, ge=0, le=25),
     ai_images: bool = Form(default=False),
     image_density: str = Form(default="standard"),
+    layout_mode: str = Form(default=""),
+    google_slides: bool = Form(default=False),
 ) -> dict:
     """Upload an MP4 and queue it for processing. Runs in a worker thread (sync def)."""
     if _busy():
@@ -145,7 +171,8 @@ def create_job(
     display = _safe_display_name(file.filename)
     if not display.lower().endswith(".mp4"):
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp .mp4.")
-    options = _job_options(title, language, style, slide_count, ai_images, image_density)
+    options = _job_options(title, language, style, slide_count, ai_images, image_density, layout_mode,
+                           google_slides)
     job_id, d = jobs.new_job(options, display)
     target = d / INPUT_NAME
     written = 0
@@ -193,8 +220,14 @@ def _busy() -> bool:
 
 
 def _job_options(title: str, language: str, style: str, slide_count: int, ai_images: bool = False,
-                 image_density: str = "standard") -> dict:
+                 image_density: str = "standard", layout_mode: str = "", google_slides: bool = False) -> dict:
     language = language or settings.default_language
+    layout_mode = layout_mode or settings.default_layout_mode
+    if layout_mode not in LAYOUT_MODES:
+        raise HTTPException(status_code=400, detail="Kiểu bố cục slide không hợp lệ.")
+    if google_slides and not google_ready():
+        raise HTTPException(status_code=409, detail="Chưa kết nối tài khoản Google. Hãy bấm 'Kết nối Google' "
+                                                    "hoặc bỏ chọn tùy chọn tạo Google Slides.")
     if language not in SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail="Ngôn ngữ không được hỗ trợ.")
     if style not in THEMES:
@@ -207,7 +240,8 @@ def _job_options(title: str, language: str, style: str, slide_count: int, ai_ima
             # Explicit refusal instead of silently producing a deck without the requested images.
             raise HTTPException(status_code=409, detail=f"{av.reason} Hãy tắt tùy chọn ảnh minh họa AI và thử lại.")
     return {"title": title.strip(), "language": language, "style": style, "slide_count": slide_count or None,
-            "illustrations": {"enabled": bool(ai_images), "density": image_density}}
+            "illustrations": {"enabled": bool(ai_images), "density": image_density},
+            "layout_mode": layout_mode, "google_slides": bool(google_slides)}
 
 
 # ---------------------------------------------------------------------- URL import
@@ -246,6 +280,8 @@ class UrlImportIn(UrlValidateIn):
     slide_count: int = Field(default=0, ge=0, le=25)
     ai_images: bool = False
     image_density: str = "standard"
+    layout_mode: str = ""
+    google_slides: bool = False
 
 
 def _url_error(exc: UrlImportError) -> HTTPException:
@@ -269,7 +305,7 @@ def import_video_url(body: UrlImportIn) -> dict:
     if not body.rights_confirmed:
         raise HTTPException(status_code=400, detail=UrlImportError("rights_not_confirmed").message)
     options = _job_options(body.title, body.language, body.style, body.slide_count, body.ai_images,
-                           body.image_density)
+                           body.image_density, body.layout_mode, body.google_slides)
     if _busy():
         raise HTTPException(status_code=429, detail=UrlImportError("busy").message)
     try:
@@ -393,6 +429,7 @@ def delete_job(job_id: str):
     if job["status"] in ("running", "downloading"):
         raise HTTPException(status_code=409, detail="Công việc đang chạy, không thể xóa.")
     jobs.delete(job_id)
+    library.delete(job_id)
     return Response(status_code=204)
 
 
@@ -470,6 +507,188 @@ def regenerate_illustration(job_id: str, slide_id: str) -> dict:
     return {"job_id": job_id, "queue_position": jobs.enqueue(job_id)}
 
 
+# ---------------------------------------------------------------------- Google account
+
+def same_origin(request: Request) -> None:
+    """State-changing Google endpoints: refuse cross-site requests from other web pages."""
+    origin = request.headers.get("origin")
+    if origin and origin.split("://", 1)[-1] != request.headers.get("host"):
+        raise HTTPException(status_code=403, detail="Yêu cầu không hợp lệ.")
+
+
+@app.get("/api/google/status", dependencies=[Depends(require_access)])
+def google_status() -> dict:
+    return google_auth.status()
+
+
+@app.post("/api/google/connect", dependencies=[Depends(require_access), Depends(same_origin)])
+def google_connect(request: Request) -> dict:
+    """Start the OAuth consent flow; the browser navigates to the returned Google URL."""
+    if not settings.google_slides_enabled:
+        raise HTTPException(status_code=404, detail="Tính năng Google Slides đang tắt.")
+    try:
+        redirect = google_auth.redirect_uri_for(str(request.base_url))
+        return {"auth_url": google_auth.start_authorization(redirect)}
+    except GoogleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.get("/api/google/oauth/callback", response_class=HTMLResponse)
+def google_callback(state: str = "", code: str = "", error: str = "") -> HTMLResponse:
+    """Redirect target of Google's consent screen (protected by the one-time state + PKCE)."""
+    if error:
+        msg = "Bạn đã hủy kết nối Google." if error == "access_denied" else "Google báo lỗi khi đăng nhập."
+        return _callback_page(False, msg)
+    try:
+        google_auth.finish_authorization(state, code)
+    except GoogleError as exc:
+        return _callback_page(False, str(exc))
+    except Exception:
+        log.exception("Google OAuth callback failed")
+        return _callback_page(False, "Không hoàn tất được đăng nhập Google.")
+    return _callback_page(True, "Đã kết nối tài khoản Google.")
+
+
+def _callback_page(ok: bool, message: str) -> HTMLResponse:
+    from html import escape
+    target = "/#google=connected" if ok else "/#google=error"
+    body = f"""<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Video2Slides</title>
+<meta http-equiv="refresh" content="2;url={target}"></head>
+<body style="font-family:Segoe UI,system-ui,sans-serif;display:grid;place-items:center;min-height:90vh">
+<div style="text-align:center"><h2>{escape(message)}</h2><p>Đang quay lại ứng dụng…</p>
+<p><a href="{target}">Quay lại ngay</a></p></div></body></html>"""
+    return HTMLResponse(body, status_code=200 if ok else 400, headers={"Cache-Control": "no-store",
+                                                                       "Referrer-Policy": "no-referrer"})
+
+
+@app.post("/api/google/disconnect", dependencies=[Depends(require_access), Depends(same_origin)])
+def google_disconnect() -> dict:
+    """Revoke the app's access and delete local tokens. Presentations already in Drive are kept."""
+    google_auth.disconnect()
+    return google_auth.status()
+
+
+class GoogleExportIn(BaseModel):
+    new_copy: bool = False
+
+
+@app.post("/api/jobs/{job_id}/google", dependencies=[Depends(require_access), Depends(same_origin)],
+          status_code=202)
+def google_export(job_id: str, body: GoogleExportIn) -> dict:
+    """Create the Google Slides version of a finished deck (or a new copy). Never overwrites one."""
+    job = _load_job(job_id)
+    if job["status"] != "done" or not output_path(jobs.job_dir(job_id)).exists():
+        raise HTTPException(status_code=409, detail="Bài trình chiếu chưa sẵn sàng.")
+    if (job.get("google") or {}).get("state") in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="Đang tạo bản Google Slides, vui lòng đợi.")
+    if not google_ready():
+        raise HTTPException(status_code=409, detail="Chưa kết nối tài khoản Google.")
+    submit_google_export(job_id, body.new_copy)
+    return {"job_id": job_id, "state": "queued"}
+
+
+@app.post("/api/jobs/{job_id}/google/check", dependencies=[Depends(require_access), Depends(same_origin)])
+def google_check(job_id: str) -> dict:
+    """Compare the live Google Slides file with this app's slide data (read-only)."""
+    pres, _, meta = _reading_source(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Bài này chưa có bản Google Slides.")
+    try:
+        res = check_sync(meta)
+    except GoogleError as exc:
+        raise HTTPException(status_code=409 if exc.code in ("not_connected", "revoked") else 502,
+                            detail=str(exc)) from None
+    expected = {m["object_id"]: speaker_notes_text(s, pres.language)
+                for m, s in zip(meta.get("slides") or [], pres.slides)}
+    edited = [m["slide_id"] for m in meta.get("slides") or []
+              if m["object_id"] in (res.get("notes") or {})
+              and " ".join(res["notes"][m["object_id"]].split()) != " ".join(expected[m["object_id"]].split())]
+    return {"exists": res["exists"], "missing": res["missing"], "reordered": res["reordered"],
+            "added": res["added"], "notes_edited": edited,
+            "in_sync": res["exists"] and not (res["missing"] or res["reordered"] or res["added"] or edited)}
+
+
+# ---------------------------------------------------------------------- Reading Mode / library
+
+def _reading_source(job_id: str) -> tuple[Presentation, Transcript | None, dict | None]:
+    """Outline, transcript and Google mapping from the job folder, or from the library."""
+    try:
+        d = jobs.job_dir(job_id)
+    except jobs.JobNotFound:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài trình chiếu.") from None
+    entry = library.get(job_id)
+    google_meta = ((jobs.load(job_id).get("google") or {}).get("meta") if (d / "job.json").exists() else None)         or (entry or {}).get("google")
+    if (d / "outline.json").exists():
+        pres, transcript = load_outline(d)
+        return pres, transcript, google_meta
+    if entry:
+        pres = Presentation.model_validate_json(entry["outline_json"])
+        transcript = Transcript.from_json(json.loads(entry["transcript_json"])) if entry.get("transcript_json") else None
+        from .reading import ensure_reading_notes
+        ensure_reading_notes(pres, transcript)
+        return pres, transcript, google_meta
+    raise HTTPException(status_code=404, detail="Không tìm thấy bài trình chiếu.")
+
+
+@app.get("/api/jobs/{job_id}/reading", dependencies=[Depends(require_access)])
+def reading(job_id: str) -> dict:
+    """Slides + explanations for Reading Mode. The client owns the current slide index."""
+    pres, transcript, gmeta = _reading_source(job_id)
+    d = jobs.job_dir(job_id)
+    pptx = output_path(d)
+    images: list[str | None] = [None] * len(pres.slides)
+    source = None
+    if pptx.exists() and preview.engine():
+        try:
+            files = preview.render_previews(d, pptx)
+            if len(files) == len(pres.slides):
+                v = int(pptx.stat().st_mtime)
+                images = [f"/api/jobs/{job_id}/preview/{i}.png?v={v}" for i in range(1, len(files) + 1)]
+                source = "local"
+        except preview.PreviewError as exc:
+            log.info("reading previews unavailable: %s", exc)
+    if source is None and gmeta and len(gmeta.get("slides") or []) == len(pres.slides):
+        images = [f"/api/jobs/{job_id}/google/thumbnail/{i}.png" for i in range(1, len(pres.slides) + 1)]
+        source = "google"
+    slides = []
+    for s, img in zip(pres.slides, images):
+        item = slide_payload(s, transcript)
+        item["image"] = img
+        slides.append(item)
+    return {
+        "job_id": job_id, "title": pres.presentation_title, "language": pres.language,
+        "slide_count": len(slides), "image_source": source, "slides": slides,
+        "google_url": (gmeta or {}).get("url"), "pptx_available": pptx.exists(),
+    }
+
+
+@app.get("/api/jobs/{job_id}/google/thumbnail/{number}.png", dependencies=[Depends(require_access)])
+def google_thumbnail(job_id: str, number: int):
+    """Slide image from Google (cached on disk; Google's temporary URL never reaches the browser)."""
+    _, _, meta = _reading_source(job_id)
+    if not meta or not 1 <= number <= len(meta.get("slides") or []):
+        raise HTTPException(status_code=404, detail="Không có ảnh slide.")
+    cache = settings.data_dir / "library" / job_id / "thumbs" / f"{meta['presentation_id'][:16]}-{number:02d}.png"
+    if not cache.is_file():
+        try:
+            fetch_thumbnail(meta, number - 1, cache)
+        except GoogleError as exc:
+            raise HTTPException(status_code=502 if exc.code != "not_found" else 404, detail=str(exc)) from None
+    return FileResponse(cache, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/library", dependencies=[Depends(require_access)])
+def library_list() -> dict:
+    items = library.recent(30)
+    for it in items:
+        try:
+            it["available"] = (jobs.job_dir(it["job_id"]) / "outline.json").exists()
+        except jobs.JobNotFound:
+            it["available"] = False
+    return {"items": items}
+
+
 # ---------------------------------------------------------------------- admin (GPU cost control)
 
 def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
@@ -494,6 +713,15 @@ def admin_kill_switch(body: KillSwitchIn) -> dict:
     image_usage.set_kill_switch(body.active)
     log.warning("AI image kill switch set to %s", body.active)
     return {"kill_switch": image_usage.kill_switch_active()}
+
+
+@app.middleware("http")
+async def revalidate_static(request: Request, call_next):
+    """Frontend files are small: always revalidate (ETag) so an app update is never served stale."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

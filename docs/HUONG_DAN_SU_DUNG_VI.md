@@ -39,14 +39,20 @@ Chạy lại `install.bat` bất cứ lúc nào cũng an toàn: không xóa dữ
 
 ## 3. Tạo bài trình chiếu
 
-1. Kéo thả tệp **MP4** (≤ 80 MB, ≤ 10 phút — chỉnh được trong `.env`) vào ô tải lên.
+1. Kéo thả tệp **MP4** (≤ 80 MB, ≤ 10 phút — chỉnh được trong `.env`) vào ô tải lên, hoặc chọn
+   tab **Dán URL** và dán liên kết YouTube / Facebook.
 2. Chọn ngôn ngữ video, số slide (hoặc *Tự động đề xuất*), phong cách:
    **Professional** (doanh nghiệp), **Academic** (giáo dục, nghiên cứu), **Creative** (marketing).
-3. Bật/tắt **Ảnh minh họa AI** (chỉ hiện khi đã cấu hình GPU worker).
-4. Bấm **Tạo bài trình chiếu** và theo dõi từng bước. Thanh tiến độ chỉ hiện số đo thật
+3. Chọn **Bố cục slide**:
+   * **Chế độ đọc** (mặc định): nội dung/hình bên trái, khung giải thích ngắn bên phải — người đọc
+     hiểu được slide mà không cần xem lại video.
+   * **Chế độ trình chiếu**: slide toàn khổ truyền thống.
+   Ở cả hai chế độ, phần giải thích đầy đủ luôn nằm trong **ghi chú thuyết trình (Speaker Notes)**.
+4. Bật/tắt **Google Slides** (cần kết nối Google một lần — xem mục 3b) và **Ảnh minh họa AI**.
+5. Bấm **Tạo bài trình chiếu** và theo dõi từng bước. Thanh tiến độ chỉ hiện số đo thật
    (số giây âm thanh đã nhận dạng, số ảnh đã tạo xong). Có thể bấm **Hủy xử lý** bất cứ lúc nào.
-5. Khi xong: xem trước từng slide (mũi tên ← → hoặc bấm ảnh nhỏ), **Tải PowerPoint (.pptx)**,
-   xem bản ghi lời nói, hoặc **Tạo lại** từng ảnh minh họa AI chưa ưng ý.
+6. Khi xong: **Mở trong Google Slides**, **Chế độ đọc**, **Tải PowerPoint (.pptx)**, xem bản ghi lời
+   nói, hoặc **Tạo lại** từng ảnh minh họa AI chưa ưng ý.
 
 Nếu một bước lỗi (mạng, hết hạn mức Gemini, GPU…), bấm **Thử lại**: các bước đã xong (bản ghi lời
 nói, dàn ý, ảnh đã tạo) được dùng lại, không chạy lại từ đầu.
@@ -57,15 +63,36 @@ font của phong cách được lưu vào slide master, nên slide bạn tự th
 
 ### Dán liên kết YouTube / Facebook
 
-Ứng dụng kiểm tra liên kết và chỉ tải video khi **được phép**:
+1. Chọn tab **Dán URL**, dán liên kết (video, Shorts, youtu.be, Facebook video/Watch/Reels, fb.watch),
+   bấm **Kiểm tra URL** (hoặc Enter). Ứng dụng hiện tiêu đề, kênh, thời lượng, ảnh đại diện.
+2. Đánh dấu ô xác nhận bạn sở hữu hoặc được phép xử lý video, rồi bấm **Tạo bài trình chiếu**.
+   Video được tải bản độ phân giải thấp (≤ 480p, đủ cho nhận dạng giọng nói và khung hình) rồi xử lý
+   như tệp tải lên; tệp video được xóa sau khi xong.
 
-* Facebook: mặc định dùng Graph API, chỉ đọc được video mà `FACEBOOK_ACCESS_TOKEN` có quyền (ví dụ
-  video trên Page của bạn). Video của người khác sẽ báo *"Không có quyền tải…"* — khi đó hãy tải tệp
-  MP4 về và kéo thả vào ứng dụng.
-* YouTube: tắt mặc định vì điều khoản YouTube không cho phép tải bằng công cụ bên thứ ba.
-* Chế độ `yt-dlp` (`FACEBOOK_RETRIEVAL=ytdlp` / `YOUTUBE_RETRIEVAL=ytdlp`, cần `pip install yt-dlp`)
-  chỉ nên bật cho nội dung bạn sở hữu hoặc được phép xử lý. Ứng dụng không vượt qua đăng nhập,
-  video riêng tư hay DRM.
+Cấu hình trong `.env`: `YOUTUBE_RETRIEVAL=ytdlp` và `FACEBOOK_RETRIEVAL=ytdlp` (đã bật sẵn; yt-dlp được
+cài cùng ứng dụng). Đặt `off` nếu không muốn tải từ liên kết. Facebook còn hỗ trợ `graph_api` (chỉ video
+mà `FACEBOOK_ACCESS_TOKEN` có quyền đọc, ví dụ Page của bạn).
+
+Lưu ý: điều khoản của YouTube/Facebook có thể không cho phép tải video bằng công cụ bên thứ ba — chỉ dùng
+cho nội dung bạn sở hữu hoặc được phép. Ứng dụng không vượt qua đăng nhập, video riêng tư, giới hạn độ
+tuổi, livestream hay DRM; những video đó sẽ báo lỗi kèm gợi ý tải tệp MP4 lên thay thế.
+
+## 3b. Google Slides và Chế độ đọc
+
+* **Google Slides**: làm theo [GOOGLE_SLIDES_SETUP_VI.md](GOOGLE_SLIDES_SETUP_VI.md) một lần, rồi bấm
+  **Kết nối Google** ở góc trên. Mỗi bài được tạo thành tệp Google Slides gốc (chỉnh sửa được) trong Drive
+  của bạn, riêng tư, kèm Speaker Notes đã được kiểm tra lại từng slide. Bài cũ: bấm **Tạo trên Google
+  Slides** ở màn hình kết quả (dùng lại ảnh AI có sẵn, không tốn GPU). Ứng dụng **không bao giờ ghi đè**
+  một bài Google Slides đã có: khi bài được dựng lại (ví dụ tạo lại ảnh), bấm **Tạo bản Google Slides
+  mới** nếu muốn.
+* **Chế độ đọc**: slide bên trái (~65%), phần giải thích bên phải (~35%): ý chính, giải thích chi tiết,
+  ví dụ, điều cần nhớ, thời điểm trong video gốc và trích lời giảng. Chuyển slide bằng nút ‹ ›, ảnh nhỏ,
+  phím ← → / Home / End, vuốt trên điện thoại; **F** = toàn màn hình. Phần giải thích đổi ngay theo slide.
+  Trên điện thoại, slide nằm trên, phần giải thích nằm dưới.
+* **Kiểm tra đồng bộ** (trong Chế độ đọc): cho biết bạn đã xóa/thêm/đổi thứ tự slide hay sửa ghi chú trong
+  Google Slides. Chế độ đọc vẫn hiển thị nội dung gốc do AI tạo; chỉnh sửa trong Google Slides không tự
+  cập nhật ngược về ứng dụng.
+* **Bài đã tạo** (góc trên): mở lại các bài trước ở Chế độ đọc, Google Slides hoặc tải lại PowerPoint.
 
 ## 4. Lấy khóa Gemini (bắt buộc để có dàn ý chất lượng)
 

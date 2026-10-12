@@ -37,6 +37,7 @@ STAGES = [
     "generating_images",       # only when AI illustrations are enabled for the job
     "generating",
     "finalizing",
+    "exporting_google",        # only when Google Slides output is requested
     "completed",
 ]
 
@@ -180,7 +181,7 @@ def enqueue(job_id: str) -> int:
 
 
 def cleanup_expired() -> int:
-    """Delete finished/failed jobs older than the TTL."""
+    """Delete failed/cancelled jobs older than the TTL, and finished ones unless the library keeps them."""
     if not settings.jobs_dir.is_dir():
         return 0
     cutoff = time.time() - settings.job_ttl_hours * 3600
@@ -192,6 +193,8 @@ def cleanup_expired() -> int:
             data = load(d.name)
             created = data.get("created_at", 0)
             active = data.get("status") in ("queued", "running", "downloading")
+            if data.get("status") == "done" and settings.keep_finished_presentations:
+                continue  # kept for the library / Reading Mode (the source video is already deleted)
         except (JobNotFound, ValueError, OSError):
             created, active = d.stat().st_mtime, False
         if created < cutoff and not active:

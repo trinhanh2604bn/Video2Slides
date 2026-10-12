@@ -36,6 +36,52 @@ class Item(BaseModel):
     text: str = Field(default="", max_length=220)
 
 
+def _clean(text: str, limit: int) -> str:
+    """Normalise whitespace but keep paragraphs (blank-line separated); trim instead of rejecting."""
+    paras = [" ".join(line.split()) for line in (text or "").splitlines()]
+    return "\n\n".join(p for p in paras if p)[:limit].rstrip()
+
+
+class TimeRange(BaseModel):
+    """A span of the source video (seconds) that supports a slide."""
+
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _order(self) -> "TimeRange":
+        if self.end < self.start:
+            self.start, self.end = self.end, self.start
+        return self
+
+
+class ReadingNotes(BaseModel):
+    """Explanation shown beside the slide in Reading Mode (and written into the speaker notes)."""
+
+    summary: str = ""
+    detailed_explanation: str = ""
+    examples: list[str] = Field(default_factory=list)
+    key_takeaway: str = ""
+
+    @field_validator("summary", "key_takeaway")
+    @classmethod
+    def _short(cls, v: str) -> str:
+        return _clean(v, 600)
+
+    @field_validator("detailed_explanation")
+    @classmethod
+    def _long(cls, v: str) -> str:
+        return _clean(v, 4000)
+
+    @field_validator("examples")
+    @classmethod
+    def _examples(cls, v: list[str]) -> list[str]:
+        return [" ".join(e.split())[:300] for e in v if e and e.strip()][:6]
+
+    def is_empty(self) -> bool:
+        return not (self.summary or self.detailed_explanation or self.examples or self.key_takeaway)
+
+
 class Slide(BaseModel):
     slide_number: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=120)
@@ -53,6 +99,10 @@ class Slide(BaseModel):
     source_timestamps: list[float] = Field(default_factory=list, max_length=10)
     # English scene description for the AI illustration model (empty = no illustration wanted).
     image_prompt: str = ""
+    # Reading experience (all optional so outlines generated before this feature still load).
+    brief_explanation: str = ""   # 1-2 sentences for the visible explanation panel on the slide
+    reading_notes: ReadingNotes = Field(default_factory=ReadingNotes)
+    source_ranges: list[TimeRange] = Field(default_factory=list, max_length=10)
 
     @property
     def slide_id(self) -> str:
@@ -63,6 +113,16 @@ class Slide(BaseModel):
     @classmethod
     def _trim_image_prompt(cls, v: str) -> str:
         return " ".join((v or "").split())[:400]
+
+    @field_validator("brief_explanation")
+    @classmethod
+    def _trim_brief(cls, v: str) -> str:
+        return _clean(v, 400)
+
+    @field_validator("source_ranges", mode="before")
+    @classmethod
+    def _cap_ranges(cls, v):
+        return (v or [])[:10]
 
     @field_validator("key_points", "left_points", "right_points")
     @classmethod
@@ -112,6 +172,17 @@ class Presentation(BaseModel):
     language: str = Field(default="vi", max_length=10)
     slides: list[Slide] = Field(min_length=2, max_length=30)
 
+    @field_validator("language", mode="before")
+    @classmethod
+    def _language_code(cls, v) -> str:
+        """Models sometimes answer "Vietnamese" / "vi-VN"; labels and notes need the bare code."""
+        low = str(v or "").strip().lower()
+        if low.startswith(("vi", "tiếng việt", "tieng viet")):
+            return "vi"
+        if low.startswith(("en", "english")):
+            return "en"
+        return low[:10] or "vi"
+
     @model_validator(mode="after")
     def _renumber(self) -> "Presentation":
         self.slides = [s for s in self.slides if s.has_body()]
@@ -135,6 +206,18 @@ def gemini_response_schema(include_image_prompt: bool = False) -> dict:
         "properties": {"heading": string, "text": string},
         "required": ["heading"],
     }
+    time_range = {
+        "type": "OBJECT",
+        "properties": {"start": {"type": "NUMBER"}, "end": {"type": "NUMBER"}},
+        "required": ["start", "end"],
+    }
+    reading = {
+        "type": "OBJECT",
+        "properties": {"summary": string, "detailed_explanation": string, "examples": str_list,
+                       "key_takeaway": string},
+        "required": ["summary", "detailed_explanation"],
+        "propertyOrdering": ["summary", "detailed_explanation", "examples", "key_takeaway"],
+    }
     slide = {
         "type": "OBJECT",
         "properties": {
@@ -152,12 +235,17 @@ def gemini_response_schema(include_image_prompt: bool = False) -> dict:
             "visual_type": {"type": "STRING", "enum": list(VISUAL_TYPES)},
             "visual_description": string,
             "source_timestamps": {"type": "ARRAY", "items": {"type": "NUMBER"}},
+            "source_ranges": {"type": "ARRAY", "items": time_range},
+            "brief_explanation": string,
+            "reading_notes": reading,
         },
-        "required": ["slide_number", "title", "layout_type", "speaker_notes", "visual_type"],
+        "required": ["slide_number", "title", "layout_type", "speaker_notes", "visual_type",
+                     "brief_explanation", "reading_notes"],
         "propertyOrdering": [
             "slide_number", "title", "subtitle", "layout_type", "key_points", "items",
             "left_title", "left_points", "right_title", "right_points",
-            "speaker_notes", "visual_type", "visual_description", "source_timestamps",
+            "speaker_notes", "visual_type", "visual_description", "source_timestamps", "source_ranges",
+            "brief_explanation", "reading_notes",
         ],
     }
     if include_image_prompt:
