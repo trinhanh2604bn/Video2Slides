@@ -19,9 +19,11 @@ Architecture
 
 This file is standalone (it is deployed to Modal on its own) and intentionally duplicates
 the parameter limits from ``app/illustrations/validation.py``.
-"""
 
-from __future__ import annotations
+Do not add ``from __future__ import annotations``: FastAPI could then not resolve the request
+model defined inside ``api()`` and would answer every valid request with 422
+(regression test: tests/test_modal_worker.py).
+"""
 
 import base64
 import io

@@ -29,3 +29,6 @@ Thumbs.db
 # Replit
 .upm/
 .pythonlibs/
+
+# Output of `modal run infrastructure/modal_image_worker.py` (local smoke test)
+smoke_test.jpg
