@@ -19,7 +19,7 @@ LayoutType = Literal[
     "stats",
     "summary",
 ]
-VisualType = Literal["video_frame", "diagram", "icon", "none"]
+VisualType = Literal["video_frame", "illustration", "diagram", "icon", "none"]
 
 LAYOUT_TYPES: tuple[str, ...] = LayoutType.__args__  # type: ignore[attr-defined]
 VISUAL_TYPES: tuple[str, ...] = VisualType.__args__  # type: ignore[attr-defined]
@@ -47,6 +47,18 @@ class Slide(BaseModel):
     visual_type: VisualType = "none"
     visual_description: str = Field(default="", max_length=300)
     source_timestamps: list[float] = Field(default_factory=list, max_length=10)
+    # English scene description for the AI illustration model (empty = no illustration wanted).
+    image_prompt: str = ""
+
+    @property
+    def slide_id(self) -> str:
+        """Stable id used to match illustrations to slides (outlines are renumbered once, then cached)."""
+        return f"slide-{self.slide_number:02d}"
+
+    @field_validator("image_prompt")
+    @classmethod
+    def _trim_image_prompt(cls, v: str) -> str:
+        return " ".join((v or "").split())[:400]
 
     @field_validator("key_points", "left_points", "right_points")
     @classmethod
@@ -93,8 +105,12 @@ class Presentation(BaseModel):
         return self
 
 
-def gemini_response_schema() -> dict:
-    """OpenAPI-subset schema accepted by Gemini's ``responseSchema``."""
+def gemini_response_schema(include_image_prompt: bool = False) -> dict:
+    """OpenAPI-subset schema accepted by Gemini's ``responseSchema``.
+
+    ``include_image_prompt`` adds the per-slide ``image_prompt`` field (only when
+    AI illustrations are requested, so the default outline request is unchanged).
+    """
     string = {"type": "STRING"}
     str_list = {"type": "ARRAY", "items": string}
     item = {
@@ -127,6 +143,9 @@ def gemini_response_schema() -> dict:
             "speaker_notes", "visual_type", "visual_description", "source_timestamps",
         ],
     }
+    if include_image_prompt:
+        slide["properties"]["image_prompt"] = string
+        slide["propertyOrdering"].append("image_prompt")
     return {
         "type": "OBJECT",
         "properties": {

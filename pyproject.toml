@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Only for the administrator machine that deploys the GPU worker (not needed on Replit).
+worker = ["modal>=1.6,<1.7"]
 
 [tool.uv]
 package = false

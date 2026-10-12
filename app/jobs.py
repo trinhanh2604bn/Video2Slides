@@ -33,6 +33,8 @@ STAGES = [
     "extracting_audio",
     "transcribing",
     "analyzing",
+    "planning_illustrations",  # only when AI illustrations are enabled for the job
+    "generating_images",       # only when AI illustrations are enabled for the job
     "generating",
     "finalizing",
     "completed",
@@ -81,6 +83,7 @@ def new_job(options: dict[str, Any], filename: str, source: dict[str, Any] | Non
         "media": None,
         "error": None,
         "result": None,
+        "illustrations": None,
     })
     return job_id, d
 

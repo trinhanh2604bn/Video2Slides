@@ -30,14 +30,14 @@ class GeminiProvider(OutlineProvider):
             raise AIError("Thiếu GEMINI_API_KEY. Hãy thêm khóa vào Replit Secrets.")
         self._client = client
 
-    def _post(self, contents: list[dict]) -> str:
+    def _post(self, contents: list[dict], with_image_prompt: bool = False) -> str:
         body = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": contents,
             "generationConfig": {
                 "temperature": 0.4,
                 "responseMimeType": "application/json",
-                "responseSchema": gemini_response_schema(),
+                "responseSchema": gemini_response_schema(include_image_prompt=with_image_prompt),
             },
         }
         client = self._client or httpx.Client(timeout=settings.ai_timeout_sec)
@@ -82,7 +82,7 @@ class GeminiProvider(OutlineProvider):
         last_error = "unknown"
         for attempt in range(1, settings.ai_max_attempts + 1):
             try:
-                raw = self._post(contents)
+                raw = self._post(contents, with_image_prompt=req.max_illustrations > 0)
             except _Retryable as exc:
                 last_error = str(exc)
                 log.warning("Gemini attempt %d failed: %s", attempt, exc)

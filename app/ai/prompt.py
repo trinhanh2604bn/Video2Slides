@@ -60,8 +60,27 @@ Video duration: {t.duration:.0f} seconds.
 Screenshots are available from the video at these seconds: {frames}.
 Prefer image layouts whose source_timestamps are close to one of those seconds.
 
+{illustration_rule(req.max_illustrations)}
 TRANSCRIPT (each line starts with its start time in seconds):
 {chr(10).join(lines)}
+"""
+
+
+def illustration_rule(max_images: int) -> str:
+    """Extra instructions when AI illustrations are requested (empty otherwise)."""
+    if max_images <= 0:
+        return ""
+    return f"""AI ILLUSTRATIONS: an image model will draw pictures for some slides.
+- Choose at most {max_images} slides where a picture genuinely helps understanding or mood:
+  the title slide and concept/example slides. Never for stats, timeline, process,
+  two_column, cards or summary slides.
+- On those slides set visual_type="illustration", use layout image_left or image_right
+  (or keep layout title for the first slide), and fill image_prompt.
+- image_prompt: ALWAYS in English, 15-40 words, one concrete visual scene or metaphor
+  (subject, setting, mood) that matches the slide content. Describe only what is seen.
+  Never ask for text, letters, words, numbers, labels, logos, charts, tables, user
+  interfaces or slide titles inside the picture. No real, identifiable people.
+- Leave image_prompt empty on every other slide.
 """
 
 

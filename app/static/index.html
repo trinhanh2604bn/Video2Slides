@@ -122,6 +122,23 @@
             <legend>Phong cách</legend>
             <div class="styles" id="styleOptions"></div>
           </fieldset>
+          <fieldset class="field wide ai-images" id="aiImagesField" hidden>
+            <legend>Ảnh minh họa AI</legend>
+            <div class="ai-row">
+              <label class="toggle">
+                <input type="checkbox" id="aiImagesCheck" checked>
+                <span>Tự động tạo ảnh minh họa bằng AI (mô hình mã nguồn mở tự triển khai)</span>
+              </label>
+              <label class="inline-select">
+                <span>Mật độ ảnh</span>
+                <select id="imageDensity">
+                  <option value="standard">Chuẩn (khoảng 1 ảnh / 3 slide)</option>
+                  <option value="high">Nhiều</option>
+                </select>
+              </label>
+            </div>
+            <small id="aiImagesHint"></small>
+          </fieldset>
         </div>
 
         <div class="actions">
@@ -163,6 +180,7 @@
           <div><dt>Hình ảnh từ video</dt><dd id="resultPictures"></dd></div>
           <div><dt>Ngôn ngữ</dt><dd id="resultLang"></dd></div>
         </dl>
+        <p class="muted small" id="resultIllus" hidden></p>
         <div class="notice" id="resultNotice" hidden></div>
         <div class="layouts" id="resultLayouts"></div>
         <div class="row">
@@ -170,6 +188,11 @@
           <button class="btn ghost" id="transcriptBtn" type="button">Xem bản ghi lời nói</button>
           <button class="btn ghost" id="newBtn" type="button">Tạo bài mới</button>
         </div>
+      </div>
+      <div class="card" id="illusCard" hidden>
+        <h3>Ảnh minh họa AI</h3>
+        <p class="muted small" id="illusNote"></p>
+        <div class="illus-grid" id="illusGrid"></div>
       </div>
       <div class="card transcript" id="transcriptCard" hidden>
         <h3>Bản ghi lời nói</h3>

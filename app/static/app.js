@@ -2,15 +2,22 @@
 
 const $ = (id) => document.getElementById(id);
 
-const STAGES = [
+const ALL_STAGES = [
   ["uploading", "Tải video lên"],
   ["extracting_audio", "Tách âm thanh & khung hình"],
   ["transcribing", "Nhận dạng giọng nói"],
   ["analyzing", "Phân tích nội dung bằng AI"],
-  ["generating", "Thiết kế slide"],
+  ["planning_illustrations", "Lập kế hoạch ảnh minh họa"],
+  ["generating_images", "Tạo ảnh minh họa AI (GPU)"],
+  ["generating", "Dựng bố cục slide"],
   ["finalizing", "Hoàn thiện & kiểm tra PowerPoint"],
   ["completed", "Hoàn tất"],
 ];
+const IMAGE_STAGES = new Set(["planning_illustrations", "generating_images"]);
+let STAGES = ALL_STAGES.filter(([k]) => !IMAGE_STAGES.has(k));
+function useImageStages(on) {
+  STAGES = ALL_STAGES.filter(([k]) => on || !IMAGE_STAGES.has(k));
+}
 const STYLE_INFO = {
   professional: { desc: "Tối giản, sang trọng cho doanh nghiệp", bg: "#ffffff", title: "#1E3A5F", accent: "#2F80ED", border: "#e3e8f0" },
   academic: { desc: "Trang trọng, rõ ràng cho giáo dục", bg: "#FBFAF6", title: "#6B1D2A", accent: "#B08D57", border: "#e8e1d2" },
@@ -92,6 +99,8 @@ async function init() {
     badge.classList.add("warn");
   }
 
+  setupAiImages(c.ai_images || {});
+
   for (const [code, name] of Object.entries(c.languages)) {
     const o = new Option(name, code, false, code === c.default_language);
     $("languageSelect").add(o);
@@ -117,6 +126,28 @@ async function init() {
 
   if (c.password_required && !store.get("appPassword", true)) { showView("authView"); return; }
   resumeOrUpload();
+}
+
+function setupAiImages(ai) {
+  if (!ai.enabled) return;
+  $("aiImagesField").hidden = false;
+  const hint = $("aiImagesHint");
+  if (!ai.available) {
+    $("aiImagesCheck").checked = false;
+    $("aiImagesCheck").disabled = true;
+    $("imageDensity").disabled = true;
+    hint.textContent = ai.reason || "Hiện không thể tạo ảnh AI.";
+    return;
+  }
+  hint.textContent = `Tối đa ${ai.max_per_presentation} ảnh mỗi bài. Ảnh chỉ chứa hình, mọi chữ trên slide vẫn chỉnh sửa được.`
+    + (ai.placeholder ? " (Chế độ thử nghiệm: ảnh giả lập, không phải AI.)" : "");
+  const sync = () => { $("imageDensity").disabled = !$("aiImagesCheck").checked; };
+  $("aiImagesCheck").addEventListener("change", sync);
+  sync();
+}
+
+function aiImagesChosen() {
+  return !$("aiImagesField").hidden && $("aiImagesCheck").checked && !$("aiImagesCheck").disabled;
 }
 
 function resumeOrUpload() {
@@ -199,6 +230,9 @@ function upload(ev) {
   fd.append("language", $("languageSelect").value);
   fd.append("style", (document.querySelector('input[name="style"]:checked') || {}).value || "professional");
   fd.append("slide_count", $("slideCountSelect").value);
+  fd.append("ai_images", aiImagesChosen() ? "true" : "false");
+  fd.append("image_density", $("imageDensity").value);
+  useImageStages(aiImagesChosen());
 
   showView("processView");
   $("processTitle").textContent = "Đang xử lý video";
@@ -277,6 +311,7 @@ async function poll() {
     return;
   }
   $("processFile").textContent = job.filename || "";
+  useImageStages(Boolean(job.options && job.options.illustrations && job.options.illustrations.enabled));
   // "queued" maps to the step right after upload in the UI.
   const stage = job.stage === "queued" ? "extracting_audio" : job.stage;
 
@@ -293,9 +328,17 @@ async function poll() {
   showView("processView");
   $("processError").hidden = true;
   renderStages(stage, false, job.stage_times || {});
+  const ip = job.illustrations;
+  if (stage === "generating_images" && ip && ip.total) {
+    // Real counts reported by the GPU worker, not an estimated percentage.
+    setStageMeta("generating_images", `${ip.done}/${ip.total} ảnh` + (ip.failed ? ` · ${ip.failed} lỗi` : ""));
+  }
   const qn = $("queueNote");
   if (job.status === "queued" && job.queue_length > 1) {
     qn.textContent = `Đang chờ: có ${job.queue_length - 1} video khác đang xử lý trước.`;
+    qn.hidden = false;
+  } else if (stage === "generating_images") {
+    qn.textContent = "GPU có thể cần thêm 1–2 phút để khởi động ở ảnh đầu tiên; các ảnh sau nhanh hơn.";
     qn.hidden = false;
   } else if (stage === "transcribing") {
     qn.textContent = "Nhận dạng giọng nói chạy trên CPU nên có thể mất vài phút với video dài.";
@@ -335,7 +378,80 @@ function showResult(job) {
     lw.appendChild(s);
   }
   $("transcriptCard").hidden = true;
+  const il = r.illustrations;
+  const illusText = $("resultIllus");
+  if (il && il.requested) {
+    illusText.textContent = `Ảnh minh họa AI: ${il.generated}/${il.requested}`
+      + (il.from_cache ? ` (${il.from_cache} lấy từ bộ nhớ đệm)` : "")
+      + (il.real_model ? "" : " — ảnh giả lập, không phải AI");
+    illusText.hidden = false;
+    loadIllustrations();
+  } else {
+    illusText.hidden = true;
+    $("illusCard").hidden = true;
+  }
   showView("resultView");
+}
+
+async function loadIllustrations() {
+  const grid = $("illusGrid");
+  for (const img of grid.querySelectorAll("img")) URL.revokeObjectURL(img.src);
+  grid.innerHTML = "";
+  let data;
+  try {
+    data = await (await api(`/api/jobs/${state.jobId}/illustrations`)).json();
+  } catch { $("illusCard").hidden = true; return; }
+  if (!data.items.length) { $("illusCard").hidden = true; return; }
+  const left = data.regenerations_max - data.regenerations_used;
+  $("illusNote").textContent = `Bạn có thể tạo lại từng ảnh (còn ${Math.max(0, left)} lượt). Bài trình chiếu sẽ được dựng lại tự động.`;
+  for (const it of data.items) {
+    const card = document.createElement("div");
+    card.className = "illus-item";
+    const ph = document.createElement("div");
+    ph.className = "ph";
+    ph.textContent = it.has_image ? "Đang tải ảnh…" : (it.error || "Chưa có ảnh");
+    const cap = document.createElement("div");
+    cap.className = "cap";
+    const title = document.createElement("span");
+    title.textContent = it.slide_title || it.slide_id;
+    title.title = title.textContent;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn ghost";
+    btn.textContent = "Tạo lại";
+    btn.disabled = left <= 0;
+    btn.addEventListener("click", () => regenerateIllustration(it.slide_id, btn));
+    cap.append(title, btn);
+    card.append(ph, cap);
+    grid.appendChild(card);
+    if (it.has_image) {
+      api(`/api/jobs/${state.jobId}/illustrations/${it.slide_id}.jpg`)
+        .then((res) => res.blob())
+        .then((blob) => {
+          const img = document.createElement("img");
+          img.alt = `Ảnh minh họa cho slide: ${it.slide_title}`;
+          img.src = URL.createObjectURL(blob);
+          ph.replaceWith(img);
+        })
+        .catch(() => { ph.textContent = "Không tải được ảnh"; });
+    }
+  }
+  $("illusCard").hidden = false;
+}
+
+async function regenerateIllustration(slideId, btn) {
+  btn.disabled = true;
+  try {
+    await api(`/api/jobs/${state.jobId}/illustrations/${slideId}/regenerate`, { method: "POST" });
+    showView("processView");
+    $("processTitle").textContent = "Đang tạo lại ảnh minh họa";
+    $("processError").hidden = true;
+    poll();
+  } catch (e) {
+    $("resultNotice").textContent = e.message;
+    $("resultNotice").hidden = false;
+    btn.disabled = false;
+  }
 }
 
 async function downloadPptx() {

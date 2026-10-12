@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import re
 import threading
@@ -19,6 +20,8 @@ from pydantic import BaseModel, Field
 from . import jobs
 from .ai import recommend_slide_count
 from .config import SUPPORTED_LANGUAGES, settings
+from .illustrations import usage as image_usage
+from .illustrations.planner import DENSITIES
 from .pipeline import INPUT_NAME, output_path, run_job
 from .pptx_engine import THEMES
 from .url_import import service as url_service
@@ -62,7 +65,7 @@ def _load_job(job_id: str) -> dict:
 def _public(job: dict) -> dict:
     """Job fields that are safe to return to the browser."""
     keys = ("id", "status", "stage", "stage_times", "created_at", "started_at", "finished_at",
-            "filename", "options", "media", "error", "result")
+            "filename", "options", "media", "error", "result", "illustrations")
     out = {k: job.get(k) for k in keys}
     src = job.get("source") or {"type": "upload"}
     out["source"] = {k: src.get(k) for k in ("type", "platform", "url", "title", "thumbnail") if k in src}
@@ -101,12 +104,25 @@ def public_config() -> dict:
         "ai_provider": _active_provider_name(),
         "password_required": bool(settings.app_password),
         "whisper_model": settings.whisper_model,
+        "ai_images": _ai_images_config(),
         "url_import": {
             "enabled": settings.url_import_enabled,
             "max_duration_sec": settings.url_max_duration_sec,
             "max_download_mb": settings.url_max_download_mb,
             "retrieval": {p: url_service.retrieval_mode(p) for p in ("youtube", "facebook")},
         },
+    }
+
+
+def _ai_images_config() -> dict:
+    av = image_usage.availability()
+    return {
+        "enabled": settings.ai_images_enabled,
+        "available": av.available,
+        "reason": av.reason,
+        "max_per_presentation": settings.image_max_per_presentation,
+        "densities": list(DENSITIES),
+        "placeholder": settings.image_provider == "mock",
     }
 
 
@@ -117,6 +133,8 @@ def create_job(
     language: str = Form(default=""),
     style: str = Form(default="professional"),
     slide_count: int = Form(default=0, ge=0, le=25),
+    ai_images: bool = Form(default=False),
+    image_density: str = Form(default="standard"),
 ) -> dict:
     """Upload an MP4 and queue it for processing. Runs in a worker thread (sync def)."""
     if _busy():
@@ -125,7 +143,7 @@ def create_job(
     display = _safe_display_name(file.filename)
     if not display.lower().endswith(".mp4"):
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp .mp4.")
-    options = _job_options(title, language, style, slide_count)
+    options = _job_options(title, language, style, slide_count, ai_images, image_density)
     job_id, d = jobs.new_job(options, display)
     target = d / INPUT_NAME
     written = 0
@@ -165,13 +183,22 @@ def _busy() -> bool:
     return jobs.pending_count() + url_service.pending_downloads() >= settings.max_queue_size
 
 
-def _job_options(title: str, language: str, style: str, slide_count: int) -> dict:
+def _job_options(title: str, language: str, style: str, slide_count: int, ai_images: bool = False,
+                 image_density: str = "standard") -> dict:
     language = language or settings.default_language
     if language not in SUPPORTED_LANGUAGES:
         raise HTTPException(status_code=400, detail="Ngôn ngữ không được hỗ trợ.")
     if style not in THEMES:
         raise HTTPException(status_code=400, detail="Phong cách không hợp lệ.")
-    return {"title": title.strip(), "language": language, "style": style, "slide_count": slide_count or None}
+    if image_density not in DENSITIES:
+        raise HTTPException(status_code=400, detail="Mật độ ảnh minh họa không hợp lệ.")
+    if ai_images:
+        av = image_usage.availability()
+        if not av.available:
+            # Explicit refusal instead of silently producing a deck without the requested images.
+            raise HTTPException(status_code=409, detail=f"{av.reason} Hãy tắt tùy chọn ảnh minh họa AI và thử lại.")
+    return {"title": title.strip(), "language": language, "style": style, "slide_count": slide_count or None,
+            "illustrations": {"enabled": bool(ai_images), "density": image_density}}
 
 
 # ---------------------------------------------------------------------- URL import
@@ -208,6 +235,8 @@ class UrlImportIn(UrlValidateIn):
     language: str = ""
     style: str = "professional"
     slide_count: int = Field(default=0, ge=0, le=25)
+    ai_images: bool = False
+    image_density: str = "standard"
 
 
 def _url_error(exc: UrlImportError) -> HTTPException:
@@ -230,7 +259,8 @@ def import_video_url(body: UrlImportIn) -> dict:
     """Start an authorised retrieval; the job then follows the normal upload pipeline."""
     if not body.rights_confirmed:
         raise HTTPException(status_code=400, detail=UrlImportError("rights_not_confirmed").message)
-    options = _job_options(body.title, body.language, body.style, body.slide_count)
+    options = _job_options(body.title, body.language, body.style, body.slide_count, body.ai_images,
+                           body.image_density)
     if _busy():
         raise HTTPException(status_code=429, detail=UrlImportError("busy").message)
     try:
@@ -314,6 +344,106 @@ def delete_job(job_id: str):
         raise HTTPException(status_code=409, detail="Công việc đang chạy, không thể xóa.")
     jobs.delete(job_id)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------- AI illustrations
+
+SLIDE_ID_RE = re.compile(r"^slide-\d{2}$")
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _illustration_entry(job_id: str, slide_id: str) -> tuple[Path, dict]:
+    if not SLIDE_ID_RE.match(slide_id):
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh minh họa.")
+    d = jobs.job_dir(job_id) / "illustrations"
+    manifest = _read_json(d / "manifest.json")
+    if slide_id not in manifest:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ảnh minh họa.")
+    return d, manifest[slide_id]
+
+
+@app.get("/api/jobs/{job_id}/illustrations", dependencies=[Depends(require_access)])
+def list_illustrations(job_id: str) -> dict:
+    job = _load_job(job_id)
+    manifest = _read_json(jobs.job_dir(job_id) / "illustrations" / "manifest.json")
+    items = []
+    for sid, e in sorted(manifest.items()):
+        req = e.get("request") or {}
+        items.append({
+            "slide_id": sid, "slide_title": req.get("slide_title", ""), "state": e.get("state"),
+            "error": e.get("error"), "source": e.get("source"), "has_image": e.get("state") == "done",
+        })
+    regen = (job.get("options") or {}).get("illustration_variants") or {}
+    return {"items": items, "regenerations_used": sum(regen.values()),
+            "regenerations_max": settings.image_max_regenerations_per_job}
+
+
+@app.get("/api/jobs/{job_id}/illustrations/{slide_id}.jpg", dependencies=[Depends(require_access)])
+def get_illustration(job_id: str, slide_id: str):
+    _load_job(job_id)
+    d, entry = _illustration_entry(job_id, slide_id)
+    path = d / f"{slide_id}.jpg"
+    if entry.get("state") != "done" or not path.is_file():
+        raise HTTPException(status_code=404, detail="Ảnh chưa sẵn sàng.")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/jobs/{job_id}/illustrations/{slide_id}/regenerate", dependencies=[Depends(require_access)],
+          status_code=202)
+def regenerate_illustration(job_id: str, slide_id: str) -> dict:
+    """Redraw one illustration (new seed) and rebuild the deck; transcript and outline are reused."""
+    job = _load_job(job_id)
+    if job["status"] not in ("done", "failed"):
+        raise HTTPException(status_code=409, detail="Công việc đang xử lý, hãy đợi hoàn tất.")
+    _illustration_entry(job_id, slide_id)
+    opts = job.get("options") or {}
+    if not (opts.get("illustrations") or {}).get("enabled"):
+        raise HTTPException(status_code=409, detail="Công việc này không bật ảnh minh họa AI.")
+    variants = dict(opts.get("illustration_variants") or {})
+    if sum(variants.values()) >= settings.image_max_regenerations_per_job:
+        raise HTTPException(status_code=429, detail="Đã đạt số lần tạo lại ảnh tối đa cho bài này.")
+    av = image_usage.availability()
+    if not av.available:
+        raise HTTPException(status_code=409, detail=av.reason)
+    if not (jobs.job_dir(job_id) / "outline.json").exists():
+        raise HTTPException(status_code=410, detail="Dữ liệu dàn ý đã bị xóa, không thể tạo lại ảnh.")
+    if _busy():
+        raise HTTPException(status_code=429, detail="Hệ thống đang bận, vui lòng thử lại sau.")
+    variants[slide_id] = variants.get(slide_id, 0) + 1
+    jobs.update(job_id, options={**opts, "illustration_variants": variants})
+    return {"job_id": job_id, "queue_position": jobs.enqueue(job_id)}
+
+
+# ---------------------------------------------------------------------- admin (GPU cost control)
+
+def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    """Admin API is disabled unless ADMIN_TOKEN is set; it never shares the user password."""
+    if not settings.admin_token:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not x_admin_token or not hmac.compare_digest(x_admin_token.encode(), settings.admin_token.encode()):
+        raise HTTPException(status_code=401, detail="Sai hoặc thiếu ADMIN_TOKEN.")
+
+
+class KillSwitchIn(BaseModel):
+    active: bool
+
+
+@app.get("/api/admin/images/usage", dependencies=[Depends(require_admin)])
+def admin_image_usage() -> dict:
+    return image_usage.report()
+
+
+@app.post("/api/admin/images/kill-switch", dependencies=[Depends(require_admin)])
+def admin_kill_switch(body: KillSwitchIn) -> dict:
+    image_usage.set_kill_switch(body.active)
+    log.warning("AI image kill switch set to %s", body.active)
+    return {"kill_switch": image_usage.kill_switch_active()}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

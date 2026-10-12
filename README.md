@@ -5,6 +5,8 @@ Convert an MP4 video into an editable, professionally designed PowerPoint deck.
 ```
 MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper (local CPU)
           ─► Gemini (structured outline, JSON schema) ─► python-pptx design engine ─► .pptx download
+                                  │ optional (AI_IMAGES_ENABLED)
+                                  └► illustration planner ─► self-hosted SDXL on Modal GPU ─► images in the deck
 ```
 
 * **Single process**: FastAPI serves the API and a plain HTML/JS frontend. No database, Redis or
@@ -23,6 +25,7 @@ MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper 
 | Design | 3 themes (Professional, Academic, Creative) × 11 layouts: title, section, bullets, image-left, image-right, two-column, process, timeline, cards, stats, summary |
 | Output | 16:9, native editable text and shapes, embedded video frames, speaker notes with source timestamps, overflow prevention, post-build validation |
 | Jobs | Stage-based progress, retry reusing cached transcript/outline, auto-cleanup after `JOB_TTL_HOURS` |
+| AI illustrations (optional) | Gemini writes an English `image_prompt` per suitable slide; a planner applies one shared style per deck; a private SDXL 1.0 worker on Modal (L4, scale-to-zero, max 1 GPU) draws them; images are validated, cached and inserted beside editable text. Budgets, daily/monthly limits and a kill switch. Setup: [docs/AI_ILLUSTRATIONS_SETUP_VI.md](docs/AI_ILLUSTRATIONS_SETUP_VI.md) |
 | Security | Server-issued job IDs only (no user paths), no `shell=True`, upload size cap while streaming, optional shared password (`APP_PASSWORD`), API key sent in a header (never in URLs/logs) |
 
 ## Project layout
@@ -36,9 +39,13 @@ app/
   video.py           ffprobe/ffmpeg helpers
   transcribe.py      faster-whisper wrapper
   ai/                schema, prompt, Gemini provider, offline fallback
+  illustrations/     image provider interface, Modal SDXL + mock providers, planner, styles,
+                     batch orchestration/cache, usage limits & kill switch
   pptx_engine/       themes, text fitting, layouts, validation
   static/            index.html, app.js, styles.css
+infrastructure/modal_image_worker.py   private SDXL GPU worker (deployed with `modal deploy`)
 scripts/download_model.py   pre-download Whisper weights
+scripts/test_image_worker.py  admin smoke test of the GPU worker (1-3 images, timings)
 tests/                      pytest suite
 ```
 
@@ -55,6 +62,14 @@ tests/                      pytest suite
 | `GET` | `/api/jobs/{id}/transcript.txt` | readable transcript |
 | `GET` | `/api/jobs/{id}/download` | the `.pptx` |
 | `DELETE` | `/api/jobs/{id}` | delete a finished job and its files |
+| `GET` | `/api/jobs/{id}/illustrations` | per-slide illustration status |
+| `GET` | `/api/jobs/{id}/illustrations/{slide_id}.jpg` | one generated illustration |
+| `POST` | `/api/jobs/{id}/illustrations/{slide_id}/regenerate` | redraw one image (new seed) and rebuild the deck |
+| `GET` | `/api/admin/images/usage` | GPU usage/limits (header `X-Admin-Token`, needs `ADMIN_TOKEN`) |
+| `POST` | `/api/admin/images/kill-switch` | `{"active": true}` stops new GPU work immediately |
+
+`POST /api/jobs` and `/api/videos/url/import` accept `ai_images` (bool) and `image_density`
+(`standard` / `high`).
 
 When `APP_PASSWORD` is set, every `/api/jobs*` call needs the header `X-App-Password`.
 
@@ -74,6 +89,7 @@ commit keys). Main variables:
 | `MAX_QUEUE_SIZE` | 3 | uploads beyond this get HTTP 429 |
 | `JOB_TTL_HOURS` | 24 | finished jobs are deleted afterwards |
 | `APP_PASSWORD` | – | optional shared password for the whole app |
+| `AI_IMAGES_ENABLED` | `false` | feature flag for AI illustrations; see `.env.example` for all `IMAGE_*` / `MODAL_*` settings |
 
 ### Getting a Gemini API key
 
@@ -164,7 +180,9 @@ after a redeploy (run `scripts/download_model.py` in the build command).
 * Speech recognition quality depends on the model size and audio; proper names are often wrong.
 * Without `GEMINI_API_KEY` the offline outline only splits and extracts transcript sentences —
   it is a fallback, not a substitute for the AI outline.
-* No external image search or AI image generation; visuals are video frames and native shapes.
+* No external image search. AI illustrations are optional and need the Modal GPU worker; without it
+  visuals are video frames and native shapes. The illustration usage ledger is stored on local disk
+  (reset by a Replit redeploy), so always also set a budget in the Modal dashboard.
 
 ## Troubleshooting
 

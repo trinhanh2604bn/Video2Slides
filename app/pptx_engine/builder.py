@@ -22,8 +22,8 @@ CT, CB = 1.8, 6.85    # content top / bottom
 CH = CB - CT
 
 LABELS = {
-    "vi": {"frame": "Khung hình tại", "sources": "Thời điểm trong video"},
-    "en": {"frame": "Frame at", "sources": "Video timestamps"},
+    "vi": {"frame": "Khung hình tại", "sources": "Thời điểm trong video", "ai_image": "Ảnh minh họa tạo bởi AI"},
+    "en": {"frame": "Frame at", "sources": "Video timestamps", "ai_image": "AI-generated illustration"},
 }
 
 
@@ -41,6 +41,7 @@ class BuildContext:
     frames: list[FrameRef]
     total: int
     used_frames: set[Path] = field(default_factory=set)
+    illustrations: dict[str, Path] = field(default_factory=dict)  # slide_id -> AI image
     warnings: list[str] = field(default_factory=list)
     section_no: int = 0
 
@@ -75,12 +76,13 @@ def pick_frame(ctx: BuildContext, s: Slide, max_distance: float | None = None) -
     return best
 
 
-def plan_layouts(pres: Presentation, frames: list[FrameRef]) -> None:
+def plan_layouts(pres: Presentation, frames: list[FrameRef], illustrated: set[str] | frozenset = frozenset()) -> None:
     """Upgrade plain bullet slides to image layouts when a matching frame exists,
     so the deck alternates visual rhythm instead of repeating one layout."""
     if not frames:
         return
-    reserved = sum(1 for s in pres.slides if s.layout_type in ("image_left", "image_right"))
+    reserved = sum(1 for s in pres.slides
+                   if s.layout_type in ("image_left", "image_right") and s.slide_id not in illustrated)
     spare = len(frames) - reserved - 1  # keep one for the title slide
     side = "image_right"
     prev = None
@@ -176,9 +178,10 @@ def _bullets(ctx: BuildContext, sl, s: Slide, points: list[str], x, y, w, h, max
 def layout_title(ctx: BuildContext, sl, s: Slide) -> None:
     t = ctx.theme
     draw.set_background(sl, t.rgb("primary"))
-    frame = pick_frame(ctx, s)
+    illus = ctx.illustrations.get(s.slide_id)
+    frame = FrameRef(illus, 0.0) if illus else pick_frame(ctx, s)
     if frame:
-        # Show the whole frame (no heavy crop) as a framed 16:9 picture.
+        # Show the whole frame / illustration (no heavy crop) as a framed 16:9 picture beside the text.
         img_w = 5.9
         img_h = img_w * 9 / 16
         ix, iy = W - M - img_w, (H - img_h) / 2
@@ -243,7 +246,8 @@ def layout_bullets(ctx: BuildContext, sl, s: Slide) -> None:
 
 def layout_image(ctx: BuildContext, sl, s: Slide, image_side: str) -> None:
     t = ctx.theme
-    frame = pick_frame(ctx, s)
+    illus = ctx.illustrations.get(s.slide_id)
+    frame = FrameRef(illus, 0.0) if illus else pick_frame(ctx, s)
     if frame is None:
         return layout_bullets(ctx, sl, s)
     chrome(ctx, sl, s)
@@ -262,8 +266,8 @@ def layout_image(ctx: BuildContext, sl, s: Slide, image_side: str) -> None:
     pic = draw.picture_cover(sl, frame.path, ix, iy, img_w, img_h)
     pic.line.color.rgb = t.rgb("surface")
     pic.line.width = Pt(1)
-    draw.text(sl, ix, iy + img_h + 0.22, img_w, 0.35, f"{ctx.labels['frame']} {_fmt_ts(frame.timestamp)}",
-              11, t.rgb("muted"), t.body_font, italic=True)
+    caption = ctx.labels["ai_image"] if illus else f"{ctx.labels['frame']} {_fmt_ts(frame.timestamp)}"
+    draw.text(sl, ix, iy + img_h + 0.22, img_w, 0.35, caption, 11, t.rgb("muted"), t.body_font, italic=True)
     _bullets(ctx, sl, s, _take(ctx, s, s.key_points, 5), tx, CT + 0.1, tw, CH - 0.3, max_pt=22, min_pt=13,
              anchor=MSO_ANCHOR.MIDDLE)
 
@@ -451,13 +455,18 @@ LAYOUTS = {
 # --------------------------------------------------------------------------- entry point
 
 def build_pptx(pres: Presentation, out_path: Path, style: str = "professional",
-               frames: list[FrameRef] | None = None) -> list[str]:
-    """Render the deck to ``out_path``. Returns a list of non-fatal layout warnings."""
+               frames: list[FrameRef] | None = None, illustrations: dict[str, Path] | None = None) -> list[str]:
+    """Render the deck to ``out_path``. Returns a list of non-fatal layout warnings.
+
+    ``illustrations`` maps slide ids to image files from any image provider; they take
+    precedence over video frames on title and image slides.
+    """
     frames = sorted(frames or [], key=lambda f: f.timestamp)
+    illustrations = {k: v for k, v in (illustrations or {}).items() if v and Path(v).is_file()}
     theme = get_theme(style)
-    plan_layouts(pres, frames)
+    plan_layouts(pres, frames, set(illustrations))
     ctx = BuildContext(theme=theme, deck_title=pres.presentation_title, language=pres.language,
-                       frames=frames, total=len(pres.slides))
+                       frames=frames, total=len(pres.slides), illustrations=illustrations)
 
     prs = PptxPresentation()
     prs.slide_width = Inches(W)

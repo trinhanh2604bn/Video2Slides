@@ -108,6 +108,42 @@ class Settings:
     # 0 = no limit. Requests per minute per client IP for the URL endpoints.
     url_rate_limit_per_min: int = field(default_factory=lambda: _int("URL_RATE_LIMIT_PER_MIN", 0))
 
+    # AI illustrations (self-hosted SDXL on Modal). Off until an admin configures the GPU worker.
+    ai_images_enabled: bool = field(default_factory=lambda: _bool("AI_IMAGES_ENABLED", False))
+    # modal_sdxl | mock (mock = local placeholder images, for development and tests only)
+    image_provider: str = field(default_factory=lambda: os.environ.get("IMAGE_PROVIDER", "modal_sdxl").lower())
+    modal_image_worker_url: str = field(default_factory=lambda: os.environ.get("MODAL_IMAGE_WORKER_URL", "").rstrip("/"))
+    # Modal *proxy auth* token: can only call the worker's web endpoint, not deploy or run code.
+    modal_proxy_token_id: str = field(default_factory=lambda: os.environ.get("MODAL_PROXY_TOKEN_ID", ""))
+    modal_proxy_token_secret: str = field(default_factory=lambda: os.environ.get("MODAL_PROXY_TOKEN_SECRET", ""))
+    image_kill_switch: bool = field(default_factory=lambda: _bool("IMAGE_KILL_SWITCH", False))
+    image_max_per_presentation: int = field(default_factory=lambda: max(0, min(8, _int("IMAGE_MAX_PER_PRESENTATION", 8))))
+    image_daily_limit: int = field(default_factory=lambda: _int("IMAGE_DAILY_LIMIT", 40))
+    image_monthly_limit: int = field(default_factory=lambda: _int("IMAGE_MONTHLY_LIMIT", 300))
+    image_monthly_budget_usd: float = field(default_factory=lambda: _float("IMAGE_MONTHLY_BUDGET_USD", 5.0))
+    # Cost model used for pre-batch estimates (Modal L4 list price; verify on modal.com/pricing).
+    image_gpu_price_per_sec: float = field(default_factory=lambda: _float("IMAGE_GPU_PRICE_PER_SEC", 0.000222))
+    image_est_seconds_per_image: float = field(default_factory=lambda: _float("IMAGE_EST_SECONDS_PER_IMAGE", 15))
+    image_est_batch_overhead_sec: float = field(default_factory=lambda: _float("IMAGE_EST_BATCH_OVERHEAD_SEC", 210))
+    image_width: int = field(default_factory=lambda: _int("IMAGE_WIDTH", 1344))
+    image_height: int = field(default_factory=lambda: _int("IMAGE_HEIGHT", 768))
+    image_steps: int = field(default_factory=lambda: _int("IMAGE_STEPS", 25))
+    image_guidance: float = field(default_factory=lambda: _float("IMAGE_GUIDANCE", 6.0))
+    image_batch_timeout_sec: int = field(default_factory=lambda: _int("IMAGE_BATCH_TIMEOUT_SEC", 900))
+    image_http_timeout_sec: int = field(default_factory=lambda: _int("IMAGE_HTTP_TIMEOUT_SEC", 30))
+    image_poll_interval_sec: float = field(default_factory=lambda: _float("IMAGE_POLL_INTERVAL_SEC", 3))
+    image_max_attempts: int = field(default_factory=lambda: max(1, min(3, _int("IMAGE_MAX_ATTEMPTS", 2))))
+    # fail = the job fails when an illustration cannot be produced; skip = keep the slide without it (with a notice)
+    image_on_failure: str = field(default_factory=lambda: os.environ.get("IMAGE_ON_FAILURE", "fail").lower())
+    image_cache_ttl_hours: float = field(default_factory=lambda: _float("IMAGE_CACHE_TTL_HOURS", 168))
+    image_max_regenerations_per_job: int = field(default_factory=lambda: _int("IMAGE_MAX_REGENERATIONS_PER_JOB", 10))
+    # Enables /api/admin/* (usage report, kill switch). Empty = admin API disabled.
+    admin_token: str = field(default_factory=lambda: os.environ.get("ADMIN_TOKEN", ""))
+
+    @property
+    def illustrations_dir(self) -> Path:
+        return self.data_dir / "illustrations"
+
     @property
     def url_max_download_bytes(self) -> int:
         return self.url_max_download_mb * 1024 * 1024

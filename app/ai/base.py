@@ -21,6 +21,7 @@ class OutlineRequest:
     title_hint: str = ""
     style: str = "professional"
     frame_timestamps: tuple[float, ...] = ()
+    max_illustrations: int = 0  # > 0: also ask for image_prompt on up to this many slides
 
 
 class OutlineProvider(ABC):
