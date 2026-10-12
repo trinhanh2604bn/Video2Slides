@@ -466,3 +466,21 @@ def test_admin_endpoints_require_token(api_client):
     assert api_client.post("/api/admin/images/kill-switch", json={"active": True}, headers=h).json()["kill_switch"]
     assert not api_client.get("/api/config").json()["ai_images"]["available"]
     api_client.post("/api/admin/images/kill-switch", json={"active": False}, headers=h)
+
+
+def test_cancel_during_gpu_batch_stops_and_cancels_pending_work(tmp_path, monkeypatch):
+    provider = MockImageProvider(pending_polls=10_000)
+    cancelled = []
+    monkeypatch.setattr(provider, "cancel", cancelled.append)
+    polls = {"n": 0}
+
+    def should_cancel():
+        polls["n"] += 1
+        return polls["n"] > 2  # the user presses "cancel" while images are still pending
+
+    service = IllustrationService(tmp_path / "j", provider, sleep=lambda _: None, should_cancel=should_cancel)
+    with pytest.raises(ImageGenerationError) as e:
+        service.run(_plan(2))
+    assert e.value.code == "cancelled" and len(cancelled) == 2
+    # Cancelled entries are re-planned, so a retry submits them again instead of polling dead calls.
+    assert {e["state"] for e in service.load_manifest().values()} == {"planned"}

@@ -2,6 +2,9 @@
 
 Convert an MP4 video into an editable, professionally designed PowerPoint deck.
 
+**Runs locally on Windows** (no Replit, no domain needed): double-click `install.bat` once, then
+`start.bat`. Vietnamese user guide: [docs/HUONG_DAN_SU_DUNG_VI.md](docs/HUONG_DAN_SU_DUNG_VI.md).
+
 ```
 MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper (local CPU)
           ─► Gemini (structured outline, JSON schema) ─► python-pptx design engine ─► .pptx download
@@ -9,8 +12,8 @@ MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper 
                                   └► illustration planner ─► self-hosted SDXL on Modal GPU ─► images in the deck
 ```
 
-* **Single process**: FastAPI serves the API and a plain HTML/JS frontend. No database, Redis or
-  external storage — job state is JSON on disk.
+* **Single local process**: FastAPI serves the API and a plain HTML/JS frontend on `127.0.0.1`.
+  No database, Redis or external storage — job state is JSON on disk.
 * **Free/open-source by default**: FFmpeg, faster-whisper and python-pptx run locally. The only
   external call is Gemini (free tier), and the app still works without it in a reduced offline mode.
 
@@ -22,9 +25,10 @@ MP4 upload ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper 
 | Video | Validates container/streams/limits, extracts mono 16 kHz WAV, samples frames and drops black, blank and duplicate frames (perceptual hash + colour) |
 | Speech | faster-whisper `tiny`/`base`/`small`, CPU int8, VAD, timestamps; model loaded once per process, one transcription at a time |
 | AI | Gemini REST with `responseSchema`, pydantic validation, self-repair on invalid JSON, backoff on 429/5xx; provider interface for adding Groq etc. |
-| Design | 3 themes (Professional, Academic, Creative) × 11 layouts: title, section, bullets, image-left, image-right, two-column, process, timeline, cards, stats, summary |
+| Design | 3 themes (Professional, Academic, Creative) × 15 layouts: title, agenda, section, bullets, concept, key insight, image-left, image-right, two-column, process, timeline, cards, stats, summary, conclusion; theme colours/fonts written into the slide master |
+| Preview | Slide images rendered by the local PowerPoint (COM) or LibreOffice, shown in the result page |
 | Output | 16:9, native editable text and shapes, embedded video frames, speaker notes with source timestamps, overflow prevention, post-build validation |
-| Jobs | Stage-based progress, retry reusing cached transcript/outline, auto-cleanup after `JOB_TTL_HOURS` |
+| Jobs | Stage-based progress with measured values only (decoded audio seconds, finished images), cancel, duplicate-upload detection, retry reusing cached transcript/outline/images, auto-cleanup after `JOB_TTL_HOURS` |
 | AI illustrations (optional) | Gemini writes an English `image_prompt` per suitable slide; a planner applies one shared style per deck; a private SDXL 1.0 worker on Modal (L4, scale-to-zero, max 1 GPU) draws them; images are validated, cached and inserted beside editable text. Budgets, daily/monthly limits and a kill switch. Setup: [docs/AI_ILLUSTRATIONS_SETUP_VI.md](docs/AI_ILLUSTRATIONS_SETUP_VI.md) |
 | Security | Server-issued job IDs only (no user paths), no `shell=True`, upload size cap while streaming, optional shared password (`APP_PASSWORD`), API key sent in a header (never in URLs/logs) |
 
@@ -57,7 +61,10 @@ tests/                      pytest suite
 | `GET` | `/api/config` | limits, styles, languages, active AI provider |
 | `POST` | `/api/jobs` | multipart upload (`file`, `title`, `language`, `style`, `slide_count`) → `202 {job_id}` |
 | `GET` | `/api/jobs/{id}` | status, current stage, stage timings, result/error |
-| `POST` | `/api/jobs/{id}/retry` | re-run a failed job (cached steps reused) |
+| `POST` | `/api/jobs/{id}/retry` | re-run a failed or cancelled job (cached steps reused) |
+| `POST` | `/api/jobs/{id}/cancel` | stop a queued/running job (pending GPU work is cancelled) |
+| `GET` | `/api/jobs/{id}/preview` | list of slide preview images (rendered on demand) |
+| `GET` | `/api/jobs/{id}/preview/{n}.png` | one slide preview |
 | `GET` | `/api/jobs/{id}/transcript` | `transcript.json` |
 | `GET` | `/api/jobs/{id}/transcript.txt` | readable transcript |
 | `GET` | `/api/jobs/{id}/download` | the `.pptx` |
@@ -75,8 +82,8 @@ When `APP_PASSWORD` is set, every `/api/jobs*` call needs the header `X-App-Pass
 
 ## Configuration
 
-Copy `.env.example` to `.env` for local development. On Replit use **Secrets** instead (never
-commit keys). Main variables:
+`install.bat` copies `.env.example` to `.env` once; edit `.env` (never commit it). On a cloud host
+use its secret store instead. Main variables:
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -102,18 +109,26 @@ Free-tier quotas (requests/minute and per day) change over time and depend on th
 check your project's limits in AI Studio. The app makes **one** Gemini request per video
 (plus at most two repair/retry requests on errors).
 
-## Run locally
+## Run locally (Windows)
 
-Requirements: Python 3.11–3.12, FFmpeg on `PATH`.
+| File | What it does |
+|---|---|
+| `install.bat` | One-time setup: `.venv` + packages, FFmpeg check (offers `winget install Gyan.FFmpeg`), `.env` from template, Whisper model download. Safe to re-run. |
+| `start.bat` | Checks the environment, starts the server on `127.0.0.1:8000` (`APP_PORT`), opens the browser when ready. Nothing is reinstalled. |
+| `stop.bat` | Stops a server started by `start.bat` (via `data/server.pid`). |
+
+Manual equivalent (any OS; requirements: Python 3.11–3.12, FFmpeg on `PATH`):
 
 ```bash
 uv venv --python 3.11 .venv
 uv pip install --python .venv -e ".[dev]"
-.venv/Scripts/python scripts/download_model.py          # Windows; use .venv/bin/python on Linux/macOS
-.venv/Scripts/python -m uvicorn app.main:app --port 8000
+.venv/Scripts/python scripts/download_model.py          # use .venv/bin/python on Linux/macOS
+.venv/Scripts/python scripts/run_local.py               # or: -m uvicorn app.main:app --port 8000
 ```
 
-Open <http://localhost:8000>.
+Admin scripts: `scripts/check_worker_auth.py` (GPU worker auth, no GPU used),
+`scripts/test_image_worker.py` (1–3 real images, uses GPU), `scripts/make_test_video.ps1`
+(synthetic Vietnamese lecture for end-to-end tests, Windows vi-VN voice).
 
 ### Tests
 
@@ -127,7 +142,10 @@ The real-speech test is opt-in because it loads the Whisper model:
 V2S_REAL_VIDEO=path/to/vietnamese.mp4 .venv/Scripts/python -m pytest -m slow
 ```
 
-## Run on Replit
+## Optional: run on Replit
+
+Replit is no longer required; the configuration (`.replit`, `replit.nix`) is kept for an optional
+cloud deployment.
 
 1. Import the GitHub repository into Replit (Python template).
 2. `.replit` / `replit.nix` already request Python 3.11 and `ffmpeg-headless`; no existing

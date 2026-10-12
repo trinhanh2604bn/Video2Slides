@@ -27,7 +27,7 @@ class GeminiProvider(OutlineProvider):
         self.api_key = api_key or settings.gemini_api_key
         self.model = model or settings.gemini_model
         if not self.api_key:
-            raise AIError("Thiếu GEMINI_API_KEY. Hãy thêm khóa vào Replit Secrets.")
+            raise AIError("Thiếu GEMINI_API_KEY. Hãy thêm khóa vào tệp .env (hoặc Secrets của máy chủ đám mây).")
         self._client = client
 
     def _post(self, contents: list[dict], with_image_prompt: bool = False) -> str:

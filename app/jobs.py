@@ -1,6 +1,6 @@
 """File-backed job store with a single in-process worker thread.
 
-Design notes (MVP on a single Replit instance):
+Design notes (single local process; also fits one small cloud instance):
 * Job state is persisted as JSON next to its files, so the UI survives page
   reloads and process restarts can be detected.
 * This is NOT a durable queue: if the process restarts mid-job the job is

@@ -2,7 +2,7 @@
 
 Server-to-server only. Requests carry a Modal *proxy auth token* (``Modal-Key`` /
 ``Modal-Secret`` headers): it can call this one web endpoint but cannot deploy
-apps or run code in the workspace, which keeps the Replit credential least-privilege.
+apps or run code in the workspace, which keeps the backend credential least-privilege.
 The browser never sees it.
 """
 
