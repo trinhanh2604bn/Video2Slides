@@ -97,3 +97,21 @@ def test_no_shell_used(monkeypatch, sample_mp4):
     monkeypatch.setattr(video.subprocess, "run", spy)
     video.probe(sample_mp4)
     assert calls and not any(k.get("shell") for k in calls)
+
+
+def test_mux_separate_streams_without_ffmpeg_binary(sample_mp4, tmp_path):
+    """URL import without FFmpeg: yt-dlp's video-only + audio-only downloads are joined with PyAV."""
+    from app import media_local
+    from app.url_import.retrieval import mux_streams
+
+    video_only = tmp_path / "video.mp4"
+    audio_only = tmp_path / "audio.m4a"
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(sample_mp4), "-an", "-c", "copy",
+                    str(video_only)], check=True)
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(sample_mp4), "-vn", "-c", "copy",
+                    str(audio_only)], check=True)
+    out = tmp_path / "media.mp4"
+    mux_streams(video_only, audio_only, out)
+    info = media_local.validate(out)
+    assert info.video_codec == "h264" and info.audio_codec == "aac"
+    assert 5 < info.duration < 7

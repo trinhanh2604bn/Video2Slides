@@ -170,7 +170,7 @@ class Presentation(BaseModel):
     presentation_title: str = Field(min_length=1, max_length=150)
     subtitle: str = Field(default="", max_length=200)
     language: str = Field(default="vi", max_length=10)
-    slides: list[Slide] = Field(min_length=2, max_length=30)
+    slides: list[Slide] = Field(min_length=2, max_length=40)  # app.ai.base.MAX_SLIDES
 
     @field_validator("language", mode="before")
     @classmethod

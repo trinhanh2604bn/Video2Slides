@@ -32,7 +32,8 @@ STAGES = [
     "queued",
     "extracting_audio",
     "transcribing",
-    "analyzing",
+    "analyzing",               # LLM: transcript analysis + slide outline
+    "writing_slides",          # LLM: slide text, speaker notes and reading notes (in batches)
     "planning_illustrations",  # only when AI illustrations are enabled for the job
     "generating_images",       # only when AI illustrations are enabled for the job
     "generating",

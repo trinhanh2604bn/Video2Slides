@@ -2,7 +2,7 @@
 
 Convert a video (MP4 upload or a YouTube / Facebook link) into an editable, professionally designed
 presentation — **native Google Slides** in your own Drive and/or PowerPoint — with a detailed explanation
-for every slide (speaker notes + a synchronized side-by-side Reading Mode).
+for every slide (speaker notes + a synchronized Reading Mode with the notes below the slide).
 
 **Runs locally on Windows** (no Replit, no domain needed): double-click `install.bat` once, then
 `start.bat`. With Node.js installed you can use `npm run setup` (once), `npm start`, `npm run stop`
@@ -10,18 +10,23 @@ and `npm test` instead. Vietnamese user guide: [docs/HUONG_DAN_SU_DUNG_VI.md](do
 
 ```
 MP4 upload / YouTube·Facebook link (yt-dlp)
-  ─► FFmpeg (audio 16 kHz mono + key frames) ─► faster-whisper (local CPU, timestamps)
-  ─► Gemini (outline + per-slide reading notes, JSON schema)
+  ─► Modal media worker: FFmpeg on CPU (audio 16 kHz mono + key frames) ─► faster-whisper on an L4 GPU
+      [or both on this computer with MEDIA_PROCESSING=local]
+  ─► LLM (default LLM_PROVIDER=modal_ollama): Ollama + qwen3:4b on a Modal L4 GPU [auto = Gemini first, Ollama fallback]
+      (outline, slide text, speaker + reading notes; JSON schema, validated, checkpointed)
   ─► [illustration planner ─► self-hosted SDXL on Modal GPU]            (optional, AI_IMAGES_ENABLED)
   ─► python-pptx design engine (Reading or Presentation layout) ─► .pptx
   ─► [Drive upload+conversion ─► Slides API validation + speaker-notes sync] ─► native Google Slides  (optional)
-  ─► Reading Mode (slide 65 % | explanation 35 %, app-owned slide index) + library (SQLite)
+  ─► Reading Mode (full-width slide, synchronized explanation below it) + library (SQLite)
 ```
 
 * **Single local process**: FastAPI serves the API and a plain HTML/JS frontend on `127.0.0.1`.
   No Redis or external storage — job state is JSON on disk, the library of finished decks is one SQLite file.
-* **Free/open-source by default**: FFmpeg, faster-whisper and python-pptx run locally. The only
-  external call is Gemini (free tier), and the app still works without it in a reduced offline mode.
+* **Cloud processing by default** (when the Modal workers are configured): the Windows app keeps the UI,
+  orchestration, PPTX and previews; video processing (FFmpeg + GPU Whisper) and the fallback LLM run on private,
+  proxy-auth Modal workers that scale to zero. No local FFmpeg, Whisper, Ollama or model download is needed.
+  By default only Ollama on Modal writes the slides; set `LLM_PROVIDER=auto` to try Gemini first.
+  Setup, routing rules and costs: [docs/MODAL_CLOUD_SETUP_VI.md](docs/MODAL_CLOUD_SETUP_VI.md).
 
 ## Features
 
@@ -30,16 +35,16 @@ MP4 upload / YouTube·Facebook link (yt-dlp)
 | Upload | Drag & drop, client-side size/duration check, server-side re-validation with ffprobe |
 | Video | Validates container/streams/limits, extracts mono 16 kHz WAV, samples frames and drops black, blank and duplicate frames (perceptual hash + colour) |
 | Speech | faster-whisper `tiny`/`base`/`small`, CPU int8, VAD, timestamps; model loaded once per process, one transcription at a time |
-| AI | Gemini REST with `responseSchema`, pydantic validation, self-repair on invalid JSON, backoff on 429/5xx; provider interface for adding Groq etc. |
+| AI | Provider interface (`app/ai`): **Ollama** (default, `qwen3:4b`, native `/api/chat`, JSON-schema `format`, streamed so jobs can be cancelled), Gemini (optional, explicit), offline. Ollama generation is staged: long transcripts are split at pauses and condensed with timestamps, an outline is planned, then slides are written 3 at a time. Every answer is validated (Pydantic + slide ids/order/count, non-empty notes, timestamps inside the video, truncation) with at most 2 targeted repairs; validated steps are cached by model + prompt version + settings + input. Details: [docs/OLLAMA_SETUP_VI.md](docs/OLLAMA_SETUP_VI.md) |
 | Design | 3 themes (Professional, Academic, Creative) × 15 layouts: title, agenda, section, bullets, concept, key insight, image-left, image-right, two-column, process, timeline, cards, stats, summary, conclusion; theme colours/fonts written into the slide master |
 | Preview | Slide images rendered by the local PowerPoint (COM) or LibreOffice, shown in the result page |
 | Output | 16:9, native editable text and shapes, embedded video frames, speaker notes with source timestamps, overflow prevention, post-build validation |
-| Jobs | Stage-based progress with measured values only (decoded audio seconds, finished images), cancel, duplicate-upload detection, retry reusing cached transcript/outline/images, auto-cleanup after `JOB_TTL_HOURS` |
-| AI illustrations (optional) | Gemini writes an English `image_prompt` per suitable slide; a planner applies one shared style per deck; a private SDXL 1.0 worker on Modal (L4, scale-to-zero, max 1 GPU) draws them; images are validated, cached and inserted beside editable text. Budgets, daily/monthly limits and a kill switch. Setup: [docs/AI_ILLUSTRATIONS_SETUP_VI.md](docs/AI_ILLUSTRATIONS_SETUP_VI.md) |
-| Reading notes | For every slide Gemini also writes a brief explanation (≤ 35 words), a detailed explanation (80–180 words), examples the speaker actually gave, a key takeaway and source time ranges. Older outlines / offline mode fall back to the transcript spans of the slide |
+| Jobs | Stage-based progress with measured values only (decoded audio seconds, slides written, finished images), cancel, duplicate-upload detection, retry reusing cached transcript/outline/images, auto-cleanup after `JOB_TTL_HOURS` |
+| AI illustrations (optional) | The LLM writes an English `image_prompt` per suitable slide; a planner applies one shared style per deck; a private SDXL 1.0 worker on Modal (L4, scale-to-zero, max 1 GPU) draws them; images are validated, cached and inserted beside editable text. Budgets, daily/monthly limits and a kill switch. Setup: [docs/AI_ILLUSTRATIONS_SETUP_VI.md](docs/AI_ILLUSTRATIONS_SETUP_VI.md) |
+| Reading notes | For every slide the LLM also writes a summary, a detailed explanation (80–160 words), examples the speaker actually gave, a key takeaway and source time ranges. Older outlines / offline mode fall back to the transcript spans of the slide |
 | Slide canvas | Every slide uses the full 16:9 canvas; there is no explanation panel on the slide. The detailed explanation, examples, key takeaway and video timestamps go into the speaker notes (PPTX and Google Slides) and the in-app Reading Mode. `layout_mode` is still accepted for compatibility |
 | Google Slides | OAuth (Desktop client, loopback + PKCE, scope `drive.file` only, token in `data/google/token.json`). The finished .pptx is uploaded with conversion to a native, editable Google Slides file, read back through the Slides API and validated (slide count, 16:9, pictures, titles); speaker notes are compared per slide and rewritten via `speakerNotesObjectId` when missing, then verified. Idempotent (Drive `appProperties`), never overwrites an existing presentation, retries 429/5xx, reuses the existing AI images. Setup: [docs/GOOGLE_SLIDES_SETUP_VI.md](docs/GOOGLE_SLIDES_SETUP_VI.md) |
-| Reading Mode | Slide image (local PowerPoint render, else cached Google thumbnail, else a text card) beside the explanation; prev/next, thumbnails, ← → / Home / End / F, swipe, fullscreen, counter, progress, timestamps, transcript excerpt; stacks on phones. A read-only "check sync" reports slides deleted/added/reordered or notes edited in Google Slides |
+| Reading Mode | Slide image (local PowerPoint render, else cached Google thumbnail, else a text card) with the explanation below it; prev/next, thumbnails, ← → / Home / End / F, swipe, fullscreen, counter, progress, timestamps, transcript excerpt; stacks on phones. A read-only "check sync" reports slides deleted/added/reordered or notes edited in Google Slides |
 | Library | "Bài đã tạo": reopen earlier decks in Reading Mode / Google Slides / re-download (`KEEP_FINISHED_PRESENTATIONS`) |
 | Security | Server-issued job IDs only (no user paths), no `shell=True`, upload size cap while streaming, optional shared password (`APP_PASSWORD`), API key sent in a header (never in URLs/logs) |
 
@@ -53,7 +58,8 @@ app/
   pipeline.py        stage orchestration with caching
   video.py           ffprobe/ffmpeg helpers
   transcribe.py      faster-whisper wrapper
-  ai/                schema, prompt, Gemini provider (with fallback models), offline fallback
+  ai/                schema, provider registry, Ollama provider (ollama.py, ollama_client.py, ollama_prompts.py),
+                     health check, Gemini provider (optional), offline fallback
   reading.py         reading notes: transcript fallback, speaker-notes text, Reading Mode payload
   library.py         SQLite library of finished presentations (outline, transcript, Google mapping)
   google_slides/     OAuth (auth.py), REST client with retries (client.py), PPTX→Slides export, validation,
@@ -112,15 +118,22 @@ use its secret store instead. Main variables:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GEMINI_API_KEY` | – | Free key from Google AI Studio (see below). Without it the app uses the offline outline. |
-| `GEMINI_MODEL` | `gemini-flash-latest` | Any model your key can call, e.g. a specific Flash / Flash-Lite version |
-| `GEMINI_FALLBACK_MODELS` | `gemini-flash-lite-latest` | Comma list tried when the main model answers 503 (overloaded) |
+| `LLM_PROVIDER` | `modal_ollama` | `modal_ollama` (Ollama on Modal only, default), `auto` (Gemini first, Ollama on Modal fallback), `gemini`, `modal_ollama`, `ollama` (local, explicit only), `offline`. The older `AI_PROVIDER` name is still read |
+| `MODAL_LLM_WORKER_URL` / `MODAL_MEDIA_WORKER_URL` | – | URLs of the deployed Modal workers (same `MODAL_PROXY_TOKEN_*` as the image worker) |
+| `MEDIA_PROCESSING` | `auto` | `auto` (Modal when `MODAL_MEDIA_WORKER_URL` is set), `modal`, `local` |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Keep Ollama on localhost |
+| `OLLAMA_MODEL` | `qwen3:4b` | Never upgraded automatically |
+| `OLLAMA_NUM_CTX` / `OLLAMA_TEMPERATURE` / `OLLAMA_KEEP_ALIVE` | 8192 / 0.2 / `5m` | Sent as `options.num_ctx`, `options.temperature`, `keep_alive` |
+| `OLLAMA_REQUEST_TIMEOUT_SECONDS` | 600 | Per request |
+| `OLLAMA_THINK` | `auto` | `auto`/`off` disable Qwen3 thinking (sent as `think: false` only if the model reports the capability), `on` enables it |
+| `OLLAMA_SLIDES_PER_BATCH` / `OLLAMA_MAX_REPAIRS` | 3 / 2 | Slides per request; repair attempts after an invalid answer |
+| `RELEASE_WHISPER_BEFORE_LLM` | `true` | Free the Whisper model before LLM inference |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` / `GEMINI_FALLBACK_MODELS` | – | Used first in `auto` mode when the key is set; `GEMINI_MAX_ATTEMPTS`, `LLM_MAX_REPAIR_ATTEMPTS`, `LLM_CIRCUIT_*` bound retries |
 | `DEFAULT_LAYOUT_MODE` | `presentation` | `reading` / `presentation` (both render full-width slides) |
 | `YOUTUBE_RETRIEVAL` / `FACEBOOK_RETRIEVAL` | `off` (template: `ytdlp`) | `ytdlp` downloads links with yt-dlp; only for content you may process |
 | `GOOGLE_SLIDES_ENABLED` | `true` | Google Slides output (needs the OAuth client file) |
 | `GOOGLE_OAUTH_CLIENT_FILE` | `data/google/client_secret.json` | Desktop-app OAuth client JSON |
 | `KEEP_FINISHED_PRESENTATIONS` | `true` | keep finished decks for the library; videos are always deleted |
-| `AI_PROVIDER` | `auto` | `auto`, `gemini`, `offline` |
 | `WHISPER_MODEL` | `base` | `tiny` / `base` / `small` |
 | `DEFAULT_LANGUAGE` | `vi` | `vi`, `en`, `auto` |
 | `MAX_UPLOAD_MB` / `MAX_DURATION_SEC` / `MAX_FRAMES` | 80 / 600 / 8 | MVP limits |
@@ -129,23 +142,34 @@ use its secret store instead. Main variables:
 | `APP_PASSWORD` | – | optional shared password for the whole app |
 | `AI_IMAGES_ENABLED` | `false` | feature flag for AI illustrations; see `.env.example` for all `IMAGE_*` / `MODAL_*` settings |
 
-### Getting a Gemini API key
+### Cloud: Modal workers (default path)
 
-1. Open <https://aistudio.google.com/apikey> and sign in with a Google account.
-2. Click **Create API key** (a free-tier project is created automatically).
-3. Put it in Replit → **Tools → Secrets** as `GEMINI_API_KEY` (or in your local `.env`).
-4. Restart the app. The header badge changes from "AI: offline" to "AI: Gemini".
+See [docs/MODAL_CLOUD_SETUP_VI.md](docs/MODAL_CLOUD_SETUP_VI.md): deploy `infrastructure/modal_llm_worker.py`
+and `infrastructure/modal_media_worker.py`, run `setup_model` once (qwen3:4b, ~2.5 GB, into a Modal Volume),
+then set `MODAL_LLM_WORKER_URL` / `MODAL_MEDIA_WORKER_URL`. Live checks: `scripts/modal_llm_live_check.py`,
+`scripts/modal_media_live_check.py`.
 
-Free-tier quotas (requests/minute and per day) change over time and depend on the model;
-check your project's limits in AI Studio. The app makes **one** Gemini request per video
-(plus at most two repair/retry requests on errors).
+### Optional: local LLM (Ollama, `LLM_PROVIDER=ollama`)
+
+`install.bat` checks Ollama (offers `winget install Ollama.Ollama`), starts it on localhost if it is not
+running (an already running Ollama is reused) and, after asking, downloads `qwen3:4b` (~2.5 GB) once.
+`start.bat` checks the service and the model on every start. `GET /api/llm/status` reports readiness.
+Setup, hardware notes and measurements: [docs/OLLAMA_SETUP_VI.md](docs/OLLAMA_SETUP_VI.md),
+[docs/OLLAMA_TEST_REPORT_VI.md](docs/OLLAMA_TEST_REPORT_VI.md).
+
+### Gemini API
+
+With `LLM_PROVIDER=auto` (opt-in; the default `modal_ollama` skips Gemini) a configured `GEMINI_API_KEY` (from <https://aistudio.google.com/apikey>)
+is used first; this sends the transcript text to Google and may be billed depending on your plan. Without a
+key, or when Gemini fails (bad key, quota, outage, timeout, invalid output), the deck is written by Ollama on
+Modal automatically. Safety refusals are never bypassed. `LLM_PROVIDER=gemini` = Gemini only.
 
 ## Run locally (Windows)
 
 | File | What it does |
 |---|---|
-| `install.bat` | One-time setup: `.venv` + packages, FFmpeg check (offers `winget install Gyan.FFmpeg`), `.env` from template, Whisper model download. Safe to re-run. |
-| `start.bat` | Checks the environment, starts the server on `127.0.0.1:8000` (`APP_PORT`), opens the browser when ready. Nothing is reinstalled. |
+| `install.bat` | One-time setup: `.venv` + packages, `.env` from template. FFmpeg (offers `winget install Gyan.FFmpeg`) and the Whisper model only for local video processing; Ollama + `qwen3:4b` only with `LLM_PROVIDER=ollama`. Safe to re-run. |
+| `start.bat` | Checks the Modal / Gemini configuration (no secrets printed) or, for local processing, FFmpeg and Ollama; Google authorization; starts the server on `127.0.0.1:8000` (`APP_PORT`), opens the browser when ready. Nothing is reinstalled. |
 | `stop.bat` | Stops a server started by `start.bat` (via `data/server.pid`). |
 
 Manual equivalent (any OS; requirements: Python 3.11–3.12, FFmpeg on `PATH`):
@@ -188,7 +212,8 @@ cloud deployment.
    ```
    (`uv sync` also works.) Weights go to `.cache/models` inside the workspace, so they are
    downloaded once, not per request.
-4. Add `GEMINI_API_KEY` (and optionally `APP_PASSWORD`, `WHISPER_MODEL`) in **Secrets**.
+4. A cloud host has no local Ollama: set `LLM_PROVIDER=gemini` + `GEMINI_API_KEY` (paid API) or point
+   `OLLAMA_BASE_URL` at an Ollama you run (optionally `APP_PASSWORD`, `WHISPER_MODEL`) in **Secrets**.
 5. Press **Run**. Verify `GET /api/health` returns `"ok": true`.
 
 ### Resource measurements
@@ -233,8 +258,9 @@ after a redeploy (run `scripts/download_model.py` in the build command).
 * Text-fit uses conservative glyph-width estimates rather than real font metrics, so some
   boxes may end up with more whitespace than strictly necessary.
 * Speech recognition quality depends on the model size and audio; proper names are often wrong.
-* Without `GEMINI_API_KEY` the offline outline only splits and extracts transcript sentences —
-  it is a fallback, not a substitute for the AI outline.
+* The local `qwen3:4b` runs on the CPU when there is no supported GPU: a short video takes minutes of LLM
+  time (see the test report). Valid JSON does not prove factual accuracy — review the slides.
+* `LLM_PROVIDER=offline` only splits and extracts transcript sentences — a fallback, not a substitute.
 * No external image search. AI illustrations are optional and need the Modal GPU worker; without it
   visuals are video frames and native shapes. The illustration usage ledger is stored on local disk
   (reset by a Replit redeploy), so always also set a budget in the Modal dashboard.
@@ -245,7 +271,11 @@ after a redeploy (run `scripts/download_model.py` in the build command).
 |---|---|
 | `/api/health` shows `ffmpeg: null` | Make sure `replit.nix` / `.replit` includes `ffmpeg-headless` and reload the Repl; locally install FFmpeg and add it to `PATH` |
 | "Không đủ bộ nhớ…" / process killed during transcription | Set `WHISPER_MODEL=tiny` or use a machine with more RAM |
-| "GEMINI_API_KEY không hợp lệ…" | Recreate the key in AI Studio and update the Secret |
+| "Không kết nối được Ollama…" | Open the Ollama app (or `ollama serve`), then **Thử lại**; transcript is reused |
+| "Ollama chưa có model…" | `ollama pull qwen3:4b` (or re-run `install.bat`) |
+| "Không đủ RAM…" / very slow LLM step | Close memory-heavy apps, keep `OLLAMA_NUM_CTX=8192` or lower; see docs/OLLAMA_SETUP_VI.md |
+| "…chưa tạo được … hợp lệ sau 3 lần thử" | Press **Thử lại** (finished steps are cached); try fewer slides |
+| "GEMINI_API_KEY không hợp lệ…" (only with `LLM_PROVIDER=gemini`) | Recreate the key in AI Studio and update `.env` |
 | "Model Gemini … không tồn tại" | Set `GEMINI_MODEL` to a model listed in AI Studio for your key |
 | HTTP 429 from Gemini after retries | Free-tier quota reached; wait or reduce usage, then press **Thử lại** |
 | Job failed after a restart | Press **Thử lại**; cached steps are reused |

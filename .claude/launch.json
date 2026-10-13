@@ -37,6 +37,15 @@
         "set IMAGE_PROVIDER=mock&& set PYTHONIOENCODING=utf-8&& .venv\\Scripts\\python.exe scripts\\run_local.py --no-browser --port 8020"
       ],
       "port": 8020
+    },
+    {
+      "name": "video2slides-modal-llm-8030",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set LLM_PROVIDER=modal_ollama&& set PYTHONIOENCODING=utf-8&& .venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8030"
+      ],
+      "port": 8030
     }
   ]
 }

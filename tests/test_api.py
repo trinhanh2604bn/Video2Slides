@@ -35,7 +35,7 @@ def _wait(client, job_id, timeout=60):
 def test_health_and_config(client):
     assert client.get("/api/health").status_code == 200
     cfg = client.get("/api/config").json()
-    assert cfg["max_upload_mb"] == 80
+    assert cfg["max_upload_mb"] == 6144 and cfg["max_duration_sec"] == 7200  # 120-minute videos
     assert set(cfg["styles"]) == {"professional", "academic", "creative"}
     assert cfg["ai_provider"] == "offline"
 
@@ -213,3 +213,25 @@ def test_preview_endpoint_without_renderer(client, sample_mp4, monkeypatch):
     assert body["available"] is False and body["slides"] == []
     assert client.get(f"/api/jobs/{job_id}/preview/1.png").status_code == 404
     assert client.get(f"/api/jobs/{job_id}/preview/0.png").status_code == 404
+
+
+def test_app_starts_without_gemini_key_or_local_ollama_and_defaults_to_modal_ollama(tmp_path):
+    """Fresh process, no LLM_PROVIDER/AI_PROVIDER/GEMINI_API_KEY and no local Ollama (unreachable URL):
+    the app starts and the router is selected; it will use Ollama on Modal (no local install needed)."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = {k: v for k, v in os.environ.items() if k not in ("LLM_PROVIDER", "AI_PROVIDER", "GEMINI_API_KEY")}
+    env.update(DATA_DIR=str(tmp_path), GEMINI_API_KEY="", PYTHONIOENCODING="utf-8",
+               OLLAMA_BASE_URL="http://127.0.0.1:9")
+    code = ("import json; from fastapi.testclient import TestClient; from app.main import app\n"
+            "with TestClient(app) as c: print(json.dumps(c.get('/api/config').json()['llm']))")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120,
+                         cwd=str(Path(__file__).resolve().parent.parent))
+    assert out.returncode == 0, out.stderr[-2000:]
+    llm = json.loads(out.stdout.strip().splitlines()[-1])
+    assert llm["provider"] == "modal_ollama" and llm["local"] is False
+    assert llm["model"] == "qwen3:4b" and "gemini_configured" not in llm  # Gemini is not in the default route

@@ -74,3 +74,15 @@ def test_theme_applied_before_stylesheet():
     for option in ("system", "light", "dark"):
         assert f'data-theme-option="{option}"' in HTML
     assert ':root[data-theme="dark"]' in (STATIC / "styles.css").read_text(encoding="utf-8")
+
+
+def test_reading_notes_sit_below_the_slide_not_beside_it():
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.reader \{([^}]*)\}", css).group(1)
+    assert "grid-template-columns: minmax(0, 1fr);" in rule
+    html_reader = HTML[HTML.index('id="readingView"'):HTML.index('id="libraryView"')]
+    assert html_reader.index('id="readerStage"') < html_reader.index('id="readerNotes"')
+
+
+def test_writing_slides_stage_is_shown():
+    assert '"writing_slides"' in JS

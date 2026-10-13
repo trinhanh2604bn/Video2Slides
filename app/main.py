@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import jobs, library, preview
-from .ai import Presentation, recommend_slide_count
+from .ai import Presentation, active_provider_name, recommend_slide_count
+from .ai.health import llm_status
 from .config import SUPPORTED_LANGUAGES, settings
 from .google_slides import GoogleError
 from .google_slides import auth as google_auth
@@ -33,7 +34,7 @@ from .reading import slide_payload, speaker_notes_text
 from .transcribe import Transcript
 from .url_import import service as url_service
 from .url_import.errors import UrlImportError
-from .video import MediaError, ffmpeg_available, validate
+from .video import MediaError, basic_validate, ffmpeg_available, validate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 # httpx logs full request URLs at INFO; keep them out of the logs.
@@ -72,7 +73,8 @@ def _load_job(job_id: str) -> dict:
 def _public(job: dict) -> dict:
     """Job fields that are safe to return to the browser."""
     keys = ("id", "status", "stage", "stage_times", "created_at", "started_at", "finished_at",
-            "filename", "options", "media", "error", "result", "illustrations", "progress", "cancel_requested")
+            "filename", "options", "media", "error", "error_code", "result", "illustrations", "progress",
+            "cancel_requested", "status_message")
     out = {k: job.get(k) for k in keys}
     out["google"] = _public_google(job.get("google"))
     src = job.get("source") or {"type": "upload"}
@@ -101,16 +103,31 @@ def _safe_display_name(name: str | None) -> str:
     return base[:120]
 
 
-def _active_provider_name() -> str:
-    if settings.ai_provider == "auto":
-        return "gemini" if settings.gemini_api_key else "offline"
-    return settings.ai_provider
+def _llm_config() -> dict:
+    name = active_provider_name()
+    model = {"ollama": settings.ollama_model, "gemini": settings.gemini_model,
+             "modal_ollama": settings.modal_llm_model}.get(name)
+    out = {"provider": name, "model": model, "local": name in ("ollama", "offline")}
+    if name == "auto":
+        out.update(gemini_configured=bool(settings.gemini_api_key), gemini_model=settings.gemini_model,
+                   fallback_model=settings.modal_llm_model, fallback_gpu=settings.modal_llm_gpu)
+    return out
 
 
 @app.get("/api/health")
 def health() -> dict:
     tools = ffmpeg_available()
-    return {"ok": all(tools.values()), "ffmpeg": tools["ffmpeg"], "ffprobe": tools["ffprobe"]}
+    if settings.media_on_modal:
+        # FFmpeg and Whisper run on the Modal media worker; local FFmpeg is optional.
+        return {"ok": True, "media_processing": "modal", "ffmpeg": tools["ffmpeg"], "ffprobe": tools["ffprobe"]}
+    return {"ok": all(tools.values()), "media_processing": "local", "ffmpeg": tools["ffmpeg"],
+            "ffprobe": tools["ffprobe"]}
+
+
+@app.get("/api/llm/status", dependencies=[Depends(require_access)])
+def llm_health() -> dict:
+    """Is the configured LLM usable right now? (Ollama reachable, model installed; never a secret)."""
+    return llm_status()
 
 
 @app.get("/api/config")
@@ -122,9 +139,11 @@ def public_config() -> dict:
         "default_language": settings.default_language,
         "styles": {k: t.label for k, t in THEMES.items()},
         "default_style": "professional",
-        "ai_provider": _active_provider_name(),
+        "ai_provider": active_provider_name(),
+        "llm": _llm_config(),
         "password_required": bool(settings.app_password),
         "whisper_model": settings.whisper_model,
+        "media_processing": "modal" if settings.media_on_modal else "local",
         "preview_engine": preview.engine(),
         "ai_images": _ai_images_config(),
         "layout_modes": list(LAYOUT_MODES),
@@ -158,7 +177,7 @@ def create_job(
     title: str = Form(default="", max_length=150),
     language: str = Form(default=""),
     style: str = Form(default="professional"),
-    slide_count: int = Form(default=0, ge=0, le=25),
+    slide_count: int = Form(default=0, ge=0, le=40),
     ai_images: bool = Form(default=False),
     image_density: str = Form(default="standard"),
     layout_mode: str = Form(default=""),
@@ -169,6 +188,7 @@ def create_job(
         raise HTTPException(status_code=429, detail="Hệ thống đang bận, vui lòng thử lại sau ít phút.")
 
     display = _safe_display_name(file.filename)
+    _check_disk_space(getattr(file, "size", None) or 0)
     if not display.lower().endswith(".mp4"):
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp .mp4.")
     options = _job_options(title, language, style, slide_count, ai_images, image_density, layout_mode,
@@ -190,7 +210,7 @@ def create_job(
             # Double click / resubmit of a video that is already being processed: follow that job.
             jobs.delete(job_id)
             return {"job_id": existing, "queue_position": jobs.pending_count(), "duplicate": True}
-        info = validate(target)
+        info = _validate_upload(target)
     except MediaError as exc:
         jobs.delete(job_id)
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -204,15 +224,42 @@ def create_job(
     finally:
         file.file.close()
 
-    if not options["slide_count"]:
-        # Rough recommendation; the AI refines it from the transcript.
-        options["recommended_slides"] = recommend_slide_count(info.duration, int(info.duration * 2.3))
-    jobs.update(job_id, options=options, content_hash=content_hash, media={
-        "duration": round(info.duration, 2), "width": info.width, "height": info.height,
-        "video_codec": info.video_codec, "audio_codec": info.audio_codec, "size_bytes": info.size_bytes,
-    })
+    media = None
+    if info is not None:
+        if not options["slide_count"]:
+            # Rough recommendation; the AI refines it from the transcript.
+            options["recommended_slides"] = recommend_slide_count(info.duration, int(info.duration * 2.3))
+        media = {"duration": round(info.duration, 2), "width": info.width, "height": info.height,
+                 "video_codec": info.video_codec, "audio_codec": info.audio_codec, "size_bytes": info.size_bytes}
+    # Without local FFmpeg (cloud processing) the media facts are filled in by the Modal media worker.
+    jobs.update(job_id, options=options, content_hash=content_hash, media=media)
     position = jobs.enqueue(job_id)
     return {"job_id": job_id, "queue_position": position}
+
+
+def _check_disk_space(incoming_bytes: int) -> None:
+    """Long videos are large: refuse early instead of filling the disk (the job folder keeps the video)."""
+    import shutil
+
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(settings.data_dir).free
+    if free - incoming_bytes < settings.min_free_disk_mb * 1024 * 1024:
+        raise HTTPException(status_code=507, detail=(
+            f"Ổ đĩa còn trống {free / 2**30:.1f} GB, không đủ để lưu video này "
+            f"(cần giữ lại tối thiểu {settings.min_free_disk_mb / 1024:.0f} GB). Hãy giải phóng dung lượng."))
+
+
+def _validate_upload(path: Path):
+    """Full ffprobe validation when FFmpeg is installed here; otherwise (cloud processing) size + MP4
+    signature now, and duration/streams on the Modal media worker before any GPU work."""
+    if settings.media_on_modal and not all(ffmpeg_available().values()):
+        from . import media_local
+
+        if media_local.available():  # PyAV (bundled with faster-whisper): full checks without FFmpeg
+            return media_local.validate(path)
+        basic_validate(path)
+        return None
+    return validate(path)
 
 
 def _busy() -> bool:
@@ -277,7 +324,7 @@ class UrlImportIn(UrlValidateIn):
     title: str = Field(default="", max_length=150)
     language: str = ""
     style: str = "professional"
-    slide_count: int = Field(default=0, ge=0, le=25)
+    slide_count: int = Field(default=0, ge=0, le=40)
     ai_images: bool = False
     image_density: str = "standard"
     layout_mode: str = ""

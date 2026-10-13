@@ -63,15 +63,76 @@ def test_invalid_json_triggers_repair_turn(monkeypatch):
     assert pres.slides
 
 
-def test_rate_limit_is_retried(monkeypatch):
-    responses = iter([httpx.Response(429, json={}), httpx.Response(503, json={}), _ok(SAMPLE)])
+def test_short_rate_limit_is_retried_once(monkeypatch):
+    responses = iter([httpx.Response(429, json={}), _ok(SAMPLE)])
     pres = _provider(lambda r: next(responses), monkeypatch).generate(_req())
     assert pres.slides
 
 
-def test_gives_up_after_max_attempts(monkeypatch):
-    with pytest.raises(AIError, match="lần thử"):
-        _provider(lambda r: httpx.Response(429, json={}), monkeypatch).generate(_req())
+def test_gives_up_after_two_request_attempts(monkeypatch):
+    calls = []
+
+    def handler(r):
+        calls.append(1)
+        return httpx.Response(429, json={})
+
+    with pytest.raises(gemini.GeminiError) as exc:
+        _provider(handler, monkeypatch).generate(_req())
+    assert exc.value.kind == "rate_limit" and len(calls) == 2
+
+
+def test_overloaded_model_switches_to_fallback_model_within_budget(monkeypatch):
+    seen = []
+
+    def handler(r):
+        seen.append(str(r.url))
+        return httpx.Response(503, json={}) if len(seen) == 1 else _ok(SAMPLE)
+
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: None)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    p = gemini.GeminiProvider(api_key="k", model="main-model", client=client, fallback_models=("lite-model",))
+    assert p.generate(_req()).slides
+    assert "main-model" in seen[0] and "lite-model" in seen[1] and p.used_model == "lite-model"
+
+
+def test_classifies_quota_exhaustion_vs_rate_limit():
+    exhausted = httpx.Response(429, json={"error": {"status": "RESOURCE_EXHAUSTED", "details": [{
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+        "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}})
+    per_minute = httpx.Response(429, headers={"retry-after": "7"}, json={"error": {"details": [{
+        "violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel"}]}]}})
+    assert gemini.classify_http_error(exhausted, "m").kind == "quota"
+    e = gemini.classify_http_error(per_minute, "m")
+    assert e.kind == "rate_limit" and e.retry_after == 7
+
+
+def test_classifies_invalid_key_sent_as_400():
+    resp = httpx.Response(400, json={"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid.",
+                                               "details": [{"reason": "API_KEY_INVALID"}]}})
+    assert gemini.classify_http_error(resp, "m").kind == "auth"
+
+
+def test_safety_block_is_a_refusal_not_a_retryable_error(monkeypatch):
+    blocked = httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
+    calls = []
+
+    def handler(r):
+        calls.append(1)
+        return blocked
+
+    with pytest.raises(gemini.GeminiError) as exc:
+        _provider(handler, monkeypatch).generate(_req())
+    assert exc.value.kind == "safety" and len(calls) == 1
+
+
+def test_long_retry_after_falls_back_promptly(monkeypatch):
+    slept = []
+    monkeypatch.setattr(gemini.time, "sleep", lambda s: slept.append(s))
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(429, headers={"retry-after": "120"}, json={})))
+    with pytest.raises(gemini.GeminiError):
+        gemini.GeminiProvider(api_key="k", model="m", client=client, fallback_models=()).generate(_req())
+    assert slept == []  # does not wait 2 minutes when a fallback exists
 
 
 def test_bad_key_fails_fast(monkeypatch):
@@ -94,4 +155,6 @@ def test_missing_key_raises():
 def test_recommend_slide_count_bounds():
     assert base.recommend_slide_count(30, 50) == 6
     assert base.recommend_slide_count(600, 1500) == 14
-    assert base.recommend_slide_count(6000, 20000) == 15
+    assert base.recommend_slide_count(900, 2070) == 16      # 15 min
+    assert base.recommend_slide_count(5400, 12420) == 35    # 90 min: ~1 more slide per 4 extra minutes
+    assert base.recommend_slide_count(6000, 20000) == base.MAX_SLIDES == 40

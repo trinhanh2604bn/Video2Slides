@@ -6,7 +6,8 @@ const ALL_STAGES = [
   ["uploading", "Tải video lên"],
   ["extracting_audio", "Tách âm thanh & khung hình"],
   ["transcribing", "Nhận dạng giọng nói"],
-  ["analyzing", "Phân tích nội dung & viết giải thích bằng AI"],
+  ["analyzing", "Phân tích nội dung & lập dàn ý bằng AI"],
+  ["writing_slides", "Viết nội dung slide & ghi chú"],
   ["planning_illustrations", "Lập kế hoạch ảnh minh họa"],
   ["generating_images", "Tạo ảnh minh họa AI (GPU)"],
   ["generating", "Dựng bố cục slide"],
@@ -200,15 +201,7 @@ async function init() {
   const c = state.config;
   $("limitsText").textContent = `MP4 · tối đa ${c.max_upload_mb} MB · tối đa ${Math.round(c.max_duration_sec / 60)} phút`;
 
-  const badge = $("providerBadge");
-  badge.hidden = false;
-  if (c.ai_provider === "gemini") {
-    badge.textContent = "AI: Gemini";
-  } else {
-    badge.textContent = "AI: offline";
-    badge.title = "Chưa cấu hình GEMINI_API_KEY — dàn ý được tạo bằng chế độ offline đơn giản";
-    badge.classList.add("warn");
-  }
+  renderProviderBadge(c.llm || { provider: c.ai_provider });
 
   const ui = c.url_import || { enabled: false };
   $("sourceTabs").hidden = !ui.enabled;
@@ -223,7 +216,7 @@ async function init() {
   for (const [code, name] of Object.entries(c.languages)) {
     $("languageSelect").add(new Option(name, code, false, code === c.default_language));
   }
-  for (let n = 5; n <= 20; n++) $("slideCountSelect").add(new Option(`${n} slide`, String(n)));
+  for (let n = 5; n <= 40; n++) $("slideCountSelect").add(new Option(`${n} slide`, String(n)));
 
   const wrap = $("styleOptions");
   for (const [key, label] of Object.entries(c.styles)) {
@@ -410,7 +403,9 @@ function selectFile(file) {
       setFileError(`Video dài ${fmtDuration(v.duration)}, vượt giới hạn ${Math.round(c.max_duration_sec / 60)} phút.`);
       return;
     }
-    const rec = Math.max(6, Math.min(15, Math.round(v.duration / 50) + 2));
+    // Same rule as app/ai/base.py recommend_slide_count (long videos: +1 slide per ~4 min, max 40)
+    const est = Math.round(v.duration / 50) + 2;
+    const rec = est <= 15 ? Math.max(6, est) : Math.max(15, Math.min(40, 15 + Math.round((v.duration / 60 - 10) / 4)));
     $("slideHint").textContent = `Đề xuất khoảng ${rec} slide cho video này.`;
     setFileReady(true);
   };
@@ -707,7 +702,12 @@ async function poll() {
     setStageMeta("exporting_google", GOOGLE_STEPS[job.google.step]);
   }
   const qn = $("queueNote");
-  if (job.status === "queued" && job.queue_length > 1) {
+  const onModal = state.config && state.config.media_processing === "modal";
+  if (job.status_message && job.status === "running") {
+    // Short server-side status (e.g. Gemini -> Ollama on Modal fallback, GPU start); never secrets.
+    qn.textContent = job.status_message;
+    qn.hidden = false;
+  } else if (job.status === "queued" && job.queue_length > 1) {
     qn.textContent = `Đang chờ: có ${job.queue_length - 1} video khác đang xử lý trước.`;
     qn.hidden = false;
   } else if (job.stage === "downloading") {
@@ -717,7 +717,9 @@ async function poll() {
     qn.textContent = "GPU có thể cần thêm 1–2 phút để khởi động ở ảnh đầu tiên; các ảnh sau nhanh hơn.";
     qn.hidden = false;
   } else if (stage === "transcribing") {
-    qn.textContent = "Nhận dạng giọng nói chạy trên CPU nên có thể mất vài phút với video dài.";
+    qn.textContent = onModal
+      ? "Nhận dạng giọng nói chạy trên GPU của Modal; lần đầu GPU có thể cần thêm thời gian khởi động."
+      : "Nhận dạng giọng nói chạy trên CPU nên có thể mất vài phút với video dài.";
     qn.hidden = false;
   } else {
     qn.hidden = true;
@@ -725,13 +727,51 @@ async function poll() {
   state.pollTimer = setTimeout(poll, 2000);
 }
 
+async function renderProviderBadge(llm) {
+  const badge = $("providerBadge");
+  badge.hidden = false;
+  badge.classList.remove("warn");
+  badge.title = "";
+  if (llm.provider === "ollama") {
+    badge.textContent = `AI: ${llm.model} (Ollama, trên máy)`;
+    try {
+      const st = await (await api("/api/llm/status")).json();
+      if (!st.ready) {
+        badge.classList.add("warn");
+        badge.textContent = `AI: ${llm.model} — chưa sẵn sàng`;
+        badge.title = st.message || "";
+      }
+    } catch (e) { /* the job itself reports a precise error */ }
+  } else if (llm.provider === "auto") {
+    badge.textContent = llm.gemini_configured
+      ? `AI: Gemini → dự phòng ${llm.fallback_model} (Ollama trên Modal)`
+      : `AI: ${llm.fallback_model} (Ollama trên Modal GPU)`;
+    badge.title = "Tự động: Gemini trước khi có khóa; khi Gemini không dùng được sẽ chuyển sang Ollama trên Modal.";
+  } else if (llm.provider === "modal_ollama") {
+    badge.textContent = `AI: ${llm.model} (Ollama trên Modal GPU)`;
+  } else if (llm.provider === "gemini") {
+    badge.textContent = `AI: Gemini (API, có thể tính phí)`;
+  } else {
+    badge.textContent = "AI: offline";
+    badge.title = "LLM_PROVIDER=offline — dàn ý được tạo bằng chế độ offline đơn giản";
+    badge.classList.add("warn");
+  }
+}
+
 function renderProgress(job, stage) {
-  // Only measured values: decoded audio seconds (Whisper) or finished images (GPU). No invented percentages.
+  // Only measured values: decoded audio seconds (Whisper), transcript parts analysed and slides written
+  // (LLM) or finished images (GPU). No invented percentages.
   const p = job.progress, ip = job.illustrations;
   let done = null, total = null, text = "";
   if (stage === "transcribing" && p && p.stage === "transcribing" && p.total_sec > 0) {
     done = p.done_sec; total = p.total_sec;
     text = `Đã nhận dạng ${fmtClock(done)} / ${fmtClock(total)} âm thanh`;
+  } else if (stage === "analyzing" && p && p.stage === "analyzing" && p.total > 1) {
+    done = p.done; total = p.total;
+    text = `Đã phân tích ${p.done}/${p.total} bước (các đoạn transcript + dàn ý)`;
+  } else if (stage === "writing_slides" && p && p.stage === "writing_slides" && p.total) {
+    done = p.done; total = p.total;
+    text = `Đã viết ${p.done}/${p.total} slide`;
   } else if (stage === "generating_images" && ip && ip.total) {
     done = ip.done; total = ip.total;
     text = `${ip.done}/${ip.total} ảnh hoàn tất` + (ip.failed ? ` · ${ip.failed} lỗi` : "");
@@ -779,6 +819,11 @@ function showResult(job) {
   $("resultPictures").textContent = r.pictures ?? 0;
   $("resultLang").textContent = LANG_NAMES[r.language] || r.language || "—";
   const notices = [...(r.notices || [])];
+  const route = r.llm_route;
+  if (route && route.successful_provider) {
+    const used = route.successful_provider === "gemini" ? "Gemini" : `${route.model || "Qwen3"} (Ollama trên Modal)`;
+    notices.unshift(`Nội dung được tạo bằng ${used}` + (route.fallback_reason_text ? ` — lý do: ${route.fallback_reason_text}.` : "."));
+  }
   $("resultNotice").textContent = notices.join(" ");
   $("resultNotice").hidden = notices.length === 0;
   const lw = $("resultLayouts");

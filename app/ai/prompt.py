@@ -46,7 +46,7 @@ STRICT RULES
 7. source_timestamps: seconds (numbers) in the transcript that support the slide.
    source_ranges: the transcript spans the slide is based on, as {start, end} seconds
    (use the line start times; 1-3 ranges per slide).
-8. Every slide must have content; no empty slides.
+8. Every slide must have content; no empty slides. Never add slides the source does not contain: no Acknowledgements, Contact, Q&A, References, About-the-speaker or Thank-you slides unless the speaker actually covers them, and never invent e-mail addresses, URLs or phone numbers. Fewer, grounded slides are better than padding.
 
 READING NOTES (a reader must understand each slide WITHOUT watching the video):
 9. brief_explanation: 1-2 short sentences (<= 35 words) shown beside the slide preview in the

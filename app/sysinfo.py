@@ -35,3 +35,32 @@ def peak_memory_mb() -> float | None:
         return round(peak / (2**20 if sys.platform == "darwin" else 2**10), 1)
     except Exception:
         return None
+
+
+def system_memory_mb() -> dict | None:
+    """Total / available physical memory of the machine in MB (Windows; POSIX via /proc/meminfo)."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            ms = MS()
+            ms.dwLength = ctypes.sizeof(MS)
+            if not ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(ms)):
+                return None
+            return {"total_mb": round(ms.ullTotalPhys / 2**20), "available_mb": round(ms.ullAvailPhys / 2**20)}
+        info = {}
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                k, v = line.split(":", 1)
+                info[k] = int(v.split()[0]) // 1024
+        return {"total_mb": info.get("MemTotal"), "available_mb": info.get("MemAvailable")}
+    except Exception:
+        return None
