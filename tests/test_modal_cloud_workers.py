@@ -181,3 +181,36 @@ def test_ollama_server_logs_never_go_to_an_unread_pipe():
     start = src.index("def _start_ollama")
     body = src[start:src.index("\ndef ", start + 10)]
     assert "subprocess.PIPE" not in body and "OLLAMA_LOG" in body
+
+
+@pytest.mark.parametrize("mod", [llm, media])
+def test_gpu_workers_fall_back_to_other_gpu_types(mod):
+    # L4 alone once waited ~4 min for Modal capacity; A10G/T4 are accepted as fallbacks, in this order.
+    assert mod.GPU_TYPES == ["L4", "A10G", "T4"]
+
+
+def test_client_reports_when_the_gpu_container_has_started():
+    import httpx
+
+    from app.media_remote import ModalMediaClient, Waiter
+
+    polls = {"n": 0}
+
+    def handle(request):
+        path = request.url.path
+        if path == "/v1/transcribe":
+            return httpx.Response(200, json={"call_id": "fc-0000000000"})
+        if path.startswith("/v1/result/"):
+            polls["n"] += 1
+            return httpx.Response(200, json={"status": "done", "result": {"ok": True}} if polls["n"] > 3
+                                  else {"status": "pending"})
+        if path.startswith("/v1/progress/"):  # empty while Modal allocates a GPU
+            return httpx.Response(200, json={} if polls["n"] < 2 else {"done_sec": 0, "total_sec": 0})
+        return httpx.Response(404)
+
+    events = []
+    client = ModalMediaClient(base_url="https://media.modal.test", token_id="k", token_secret="s",
+                              client=httpx.Client(transport=httpx.MockTransport(handle)), sleep=lambda s: None)
+    client.transcribe("a" * 32, {}, Waiter(on_tick=lambda f: events.append(("tick", f)),
+                                           on_started=lambda: events.append(("started", polls["n"]))))
+    assert events == [("started", 2)]  # once, only after the worker wrote its marker; no tick with total 0

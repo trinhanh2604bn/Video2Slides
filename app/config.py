@@ -128,7 +128,7 @@ class Settings:
     # local = FFmpeg + faster-whisper on this computer; auto = modal when MODAL_MEDIA_WORKER_URL is set.
     media_processing: str = field(default_factory=lambda: os.environ.get("MEDIA_PROCESSING", "auto").strip().lower())
     modal_media_worker_url: str = field(default_factory=lambda: os.environ.get("MODAL_MEDIA_WORKER_URL", "").rstrip("/"))
-    modal_media_upload_chunk_mb: int = field(default_factory=lambda: max(1, min(32, _int("MODAL_MEDIA_UPLOAD_CHUNK_MB", 8))))
+    modal_media_upload_chunk_mb: int = field(default_factory=lambda: max(1, min(32, _int("MODAL_MEDIA_UPLOAD_CHUNK_MB", 4))))
     modal_media_timeout_sec: int = field(default_factory=lambda: _int("MODAL_MEDIA_TIMEOUT_SECONDS", 2400))
     # Whisper on the GPU worker. Measured on L4 (scripts/asr_eval.py, Vietnamese lecture clip):
     #   base sequential 22.1% syllable errors, small sequential 13.5%, small batched (16) + beam 5 + word

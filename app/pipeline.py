@@ -389,7 +389,8 @@ def _media_on_modal(job_id: str, d: Path, video: Path, opts: dict, tset: dict, s
 
         jobs.check_cancel(job_id)
         jobs.set_stage(job_id, "transcribing")
-        _status(job_id, "Đang nhận dạng giọng nói bằng Whisper trên GPU (Modal).")
+        _status(job_id, "Đang chờ Modal cấp GPU cho Whisper (có thể mất vài phút khi Modal đang bận).")
+        waiter.on_started = lambda: _status(job_id, "Đang nhận dạng giọng nói bằng Whisper trên GPU (Modal).")
         info["llm_prewarm"] = _prewarm_llm(d)
         total = float((ck.get("media") or {}).get("duration") or 0)
         waiter.on_tick = lambda frac: jobs.update(job_id, progress={

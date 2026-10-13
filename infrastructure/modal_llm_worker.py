@@ -6,7 +6,7 @@ Deploy (administrator only, see docs/MODAL_CLOUD_SETUP_VI.md):
     modal run infrastructure/modal_llm_worker.py::setup_model     # one-time model download, CPU only
 
 Architecture (separate from the SDXL image worker: own app, own GPU allocation, own Volume)
-* ``OllamaWorker`` (GPU, NVIDIA L4): starts ONE ``ollama serve`` per container, bound to 127.0.0.1 only
+* ``OllamaWorker`` (GPU: L4, else A10G/T4): starts ONE ``ollama serve`` per container, bound to 127.0.0.1 only
   (port 11434 is never exposed), waits for it with a bounded timeout, checks the model files are complete,
   loads the model and verifies with ``/api/ps`` that the weights are in GPU memory. CPU-only inference is
   refused (``gpu_not_used``), never silently accepted. ``max_containers=1`` + one input per container =
@@ -44,7 +44,8 @@ import modal
 APP_NAME = os.environ.get("V2S_LLM_APP_NAME", "video2slides-llm-worker")
 OLLAMA_VERSION = "0.40.3"           # pinned; tested with qwen3:4b (think=false supported)
 MODEL = os.environ.get("V2S_LLM_MODEL", "qwen3:4b")
-GPU_TYPE = os.environ.get("V2S_LLM_GPU", "L4")
+# Fallback order when L4 has no free capacity (qwen3:4b needs ~4 GB VRAM; all three fit it fully).
+GPU_TYPES = [g.strip() for g in os.environ.get("V2S_LLM_GPU", "L4,A10G,T4").split(",") if g.strip()]
 MODELS_DIR = "/models"
 OLLAMA_ADDR = "127.0.0.1:11434"     # loopback only: the daemon is reachable from inside the container only
 OLLAMA_URL = f"http://{OLLAMA_ADDR}"
@@ -353,7 +354,7 @@ def setup_model(model: str = MODEL) -> dict:
 
 @app.cls(
     image=gpu_image,
-    gpu=GPU_TYPE,
+    gpu=GPU_TYPES,
     volumes={MODELS_DIR: models_volume},
     min_containers=0,                 # scale to zero: no GPU billed while idle
     max_containers=1,                 # at most one LLM GPU container
@@ -488,7 +489,7 @@ def api():
         except Exception:
             pass
         marker = _read_marker()
-        return {"ok": True, "app": APP_NAME, "model": MODEL, "ollama_version": OLLAMA_VERSION, "gpu": GPU_TYPE,
+        return {"ok": True, "app": APP_NAME, "model": MODEL, "ollama_version": OLLAMA_VERSION, "gpu": GPU_TYPES,
                 "model_ready": bool(marker), "model_info": marker or {},
                 "limits": {"max_containers": 1, "max_inputs_per_container": 1, "scaledown_window_sec": SCALEDOWN_SEC,
                            "request_timeout_sec": REQUEST_TIMEOUT_SEC, "max_request_bytes": MAX_REQUEST_BYTES,

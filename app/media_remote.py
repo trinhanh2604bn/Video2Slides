@@ -58,6 +58,8 @@ def file_sha256(path: Path) -> str:
 class Waiter:
     check_cancel: Callable[[], None] | None = None
     on_tick: Callable[[float], None] | None = None
+    # Called once when the GPU container has started the call (until then Modal is allocating a GPU).
+    on_started: Callable[[], None] | None = None
 
 
 class ModalMediaClient:
@@ -115,7 +117,7 @@ class ModalMediaClient:
                     w.check_cancel()
                 for attempt in range(3):  # bounded retry per chunk (idempotent PUT)
                     try:
-                        self._request("PUT", f"/v1/uploads/{upload_id}/chunks/{index}", content=data, timeout=120,
+                        self._request("PUT", f"/v1/uploads/{upload_id}/chunks/{index}", content=data, timeout=300,
                                       headers={"Content-Type": "application/octet-stream"})
                         break
                     except RemoteMediaError as exc:
@@ -146,6 +148,7 @@ class ModalMediaClient:
 
     def _wait(self, call_id: str, w: Waiter, progress_of: str | None) -> dict:
         deadline = time.monotonic() + config.settings.modal_media_timeout_sec
+        started = False
         while True:
             try:
                 if w.check_cancel:
@@ -175,10 +178,14 @@ class ModalMediaClient:
                                        str(data.get("error_code") or "worker_error"), bool(data.get("retryable")))
             if state == "expired":
                 raise RemoteMediaError("Kết quả trên media worker đã hết hạn.", "expired", True)
-            if progress_of and w.on_tick:
+            if progress_of and (w.on_tick or w.on_started):
                 try:
                     p = self._request("GET", f"/v1/progress/{progress_of}").json() or {}
-                    if p.get("total_sec"):
+                    if p and not started:
+                        started = True
+                        if w.on_started:
+                            w.on_started()
+                    if p.get("total_sec") and w.on_tick:
                         w.on_tick(float(p["done_sec"]) / float(p["total_sec"]))
                 except (RemoteMediaError, ValueError, KeyError):
                     pass

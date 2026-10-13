@@ -12,7 +12,7 @@ Flow (the backend drives every step and keeps a checkpoint after each one):
              audio), extracts 16 kHz mono PCM audio (CPU: audio work never uses the GPU) and grabs candidate
              frames (single-frame seeks; NVDEC would not make this faster, so it is not used). The source is
              deleted once the audio exists. Returns metadata + small JPEG frames, never the audio.
-3. transcribe  GPU class (NVIDIA L4): faster-whisper with device="cuda", compute_type="float16". If CUDA is
+3. transcribe  GPU class (L4, else A10G/T4): faster-whisper with device="cuda", compute_type="float16". If CUDA is
              unavailable it fails with ``cuda_unavailable``; it never falls back to CPU. Returns timestamped
              segments and runtime evidence (CTranslate2 CUDA device count, GPU name, VRAM used by the model).
 4. delete    The backend deletes the upload after success, failure or cancellation; stale uploads older than
@@ -36,7 +36,9 @@ import uuid
 import modal
 
 APP_NAME = os.environ.get("V2S_MEDIA_APP_NAME", "video2slides-media-worker")
-GPU_TYPE = os.environ.get("V2S_MEDIA_GPU", "L4")
+# Fallback order: Modal starts the first type with free capacity. L4 alone sometimes waited ~4 min for capacity
+# (measured 2026-10-13); all three run faster-whisper float16 (T4: sm_75).
+GPU_TYPES = [g.strip() for g in os.environ.get("V2S_MEDIA_GPU", "L4,A10G,T4").split(",") if g.strip()]
 MEDIA_DIR = "/media"
 WHISPER_CACHE = "/whisper-cache"
 FASTER_WHISPER_VERSION = "1.2.1"
@@ -271,7 +273,7 @@ def _gpu_memory_used() -> tuple[str, int]:
 
 @app.cls(
     image=gpu_image,
-    gpu=GPU_TYPE,
+    gpu=GPU_TYPES,
     volumes={MEDIA_DIR: media_volume, WHISPER_CACHE: whisper_cache},
     min_containers=0,
     max_containers=1,
@@ -312,6 +314,10 @@ class WhisperWorker:
     @modal.method()
     def transcribe(self, upload_id: str, params: dict) -> dict:
         cold, self.first_call = self.first_call, False
+        try:  # tells the backend the GPU is allocated (before this, the call is waiting for Modal capacity)
+            progress[upload_id] = {"done_sec": 0, "total_sec": 0, "phase": "running", "at": time.time()}
+        except Exception:
+            pass
         name = str(params.get("model") or "base")
         compute_type = str(params.get("compute_type") or "float16")
         language = params.get("language") or None
@@ -358,7 +364,8 @@ class WhisperWorker:
                 if time.monotonic() - last >= 2:
                     last = time.monotonic()
                     progress[upload_id] = {"done_sec": round(min(s.end, info.duration), 1),
-                                           "total_sec": round(info.duration, 1), "at": time.time()}
+                                           "total_sec": round(info.duration, 1), "phase": "running",
+                                           "at": time.time()}
         except Exception as exc:
             print(f"transcription failed: {exc.__class__.__name__}")
             return {"ok": False, "error_code": "transcription_failed", "retryable": True,
@@ -404,7 +411,7 @@ def setup_whisper(model: str = "base") -> dict:
 # ---------------------------------------------------------------------- authenticated CPU API
 
 @app.function(image=web_image, volumes={MEDIA_DIR: media_volume}, min_containers=0, max_containers=1,
-              scaledown_window=60, timeout=120)
+              scaledown_window=60, timeout=600)  # a chunk PUT on a slow uplink took >120 s (2-hour video)
 @modal.concurrent(max_inputs=8)
 @modal.asgi_app(requires_proxy_auth=True)
 def api():
@@ -431,7 +438,7 @@ def api():
 
     @web.get("/v1/health")
     def health() -> dict:  # never starts a GPU
-        return {"ok": True, "app": APP_NAME, "gpu": GPU_TYPE, "faster_whisper": FASTER_WHISPER_VERSION,
+        return {"ok": True, "app": APP_NAME, "gpu": GPU_TYPES, "faster_whisper": FASTER_WHISPER_VERSION,
                 "models": sorted(ALLOWED_MODELS), "limits": {
                     "max_upload_bytes": MAX_UPLOAD_BYTES, "max_chunk_bytes": MAX_CHUNK_BYTES,
                     "max_duration_sec": MAX_DURATION_SEC, "max_containers": 1, "scaledown_window_sec": SCALEDOWN_SEC}}
