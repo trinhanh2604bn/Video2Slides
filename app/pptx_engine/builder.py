@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import math
-import threading
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,31 +15,26 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from ..ai.schema import Presentation, Slide
-from ..reading import panel_text, speaker_notes_text
+from ..reading import speaker_notes_text
 from . import draw
 from .textfit import fit_or_trim, text_height_in
 from .themes import Theme, get_theme
 
 FULL_W, H = 13.333, 7.5
-W = FULL_W            # width of the content canvas (narrower while drawing a Reading Layout slide)
+W = FULL_W            # every slide uses the full 16:9 canvas
 M = 0.6               # outer margin
 CT, CB = 1.8, 6.85    # content top / bottom
 CH = CB - CT
 
+# Accepted for compatibility with saved jobs and the API. Both render the same full-width slides:
+# explanations live in the speaker notes and the website's Reading Mode, never on the slide canvas.
 LAYOUT_MODES = ("reading", "presentation")
-# Reading Layout: visual content on the left ~63%, explanation panel on the right ~37%.
-READING_CONTENT_W = 8.45
-# Layouts that would be cramped next to the panel; they stay full width (explanation is in the notes).
-DENSE_LAYOUTS = ("process", "timeline", "cards", "stats")
-_canvas_lock = threading.Lock()
 
 LABELS = {
     "vi": {"frame": "Khung hình tại", "ai_image": "Ảnh minh họa tạo bởi AI",
-           "definition": "ĐỊNH NGHĨA", "insight": "ĐIỂM CỐT LÕI", "explain": "GIẢI THÍCH",
-           "takeaway": "Ý CHÍNH CẦN NHỚ"},
+           "definition": "ĐỊNH NGHĨA", "insight": "ĐIỂM CỐT LÕI"},
     "en": {"frame": "Frame at", "ai_image": "AI-generated illustration",
-           "definition": "DEFINITION", "insight": "KEY INSIGHT", "explain": "EXPLANATION",
-           "takeaway": "KEY TAKEAWAY"},
+           "definition": "DEFINITION", "insight": "KEY INSIGHT"},
 }
 
 
@@ -496,8 +489,6 @@ def layout_concept(ctx: BuildContext, sl, s: Slide) -> None:
     chrome(ctx, sl, s)
     illus = ctx.illustrations.get(s.slide_id)
     parts = [(it.heading, it.text) for it in s.items[:4]] or [(p, "") for p in s.key_points[:4]]
-    if illus and parts and W < FULL_W:
-        return _concept_compact(ctx, sl, s, illus, parts)
     if illus:
         img_w = min(5.6, (W - 2 * M) * 0.48)
         img_h = img_w * 9 / 16
@@ -541,40 +532,6 @@ def layout_concept(ctx: BuildContext, sl, s: Slide) -> None:
             hp, hs = _fit(ctx, s.slide_number, [head], tw, row_h, 20, 12)
             draw.text(sl, lx + 0.25, y, tw, row_h, hp, hs, t.rgb("text"), t.body_font, anchor=MSO_ANCHOR.MIDDLE)
         y += row_h + gap
-
-
-def _concept_compact(ctx: BuildContext, sl, s: Slide, illus: Path, parts: list[tuple[str, str]]) -> None:
-    """Concept on a narrow canvas: definition beside a smaller picture, characteristics in a row below."""
-    t = ctx.theme
-    cw = W - 2 * M - 0.2
-    img_w = 3.3
-    img_h = img_w * 9 / 16
-    ix, iy = W - M - 0.1 - img_w, CT + 0.1
-    draw.shape(sl, ix + 0.14, iy + 0.14, img_w, img_h, t.rgb("accent"), alpha=0.35)
-    draw.picture_cover(sl, illus, ix, iy, img_w, img_h)
-    draw.text(sl, ix, iy + img_h + 0.16, img_w, 0.3, ctx.labels["ai_image"], 10, t.rgb("muted"), t.body_font,
-              italic=True)
-    def_w, def_h = cw - img_w - 0.35, img_h + 0.45
-    _card(ctx, sl, M + 0.1, CT + 0.1, def_w, def_h, fill_name="primary").name = "Definition"
-    draw.text(sl, M + 0.35, CT + 0.25, def_w - 0.5, 0.35, ctx.labels["definition"], 11, t.rgb("accent"),
-              t.body_font, bold=True)
-    dp, ds = _fit(ctx, s.slide_number, [s.subtitle], def_w - 0.5, def_h - 0.75, 20, 13)
-    draw.text(sl, M + 0.35, CT + 0.6, def_w - 0.5, def_h - 0.75, dp, ds, t.rgb("on_primary"), t.title_font)
-
-    gap = 0.3
-    n = len(parts)
-    top = CT + 0.1 + def_h + 0.4
-    colw = (cw - gap * (n - 1)) / n
-    for i, (head, body) in enumerate(parts):
-        x = M + 0.1 + i * (colw + gap)
-        draw.shape(sl, x, top, colw, 0.06, t.rgb("accent" if i % 2 == 0 else "accent2"))
-        head_h = 0.75 if body else CB - top - 0.15
-        hp, hs = _fit(ctx, s.slide_number, [head], colw, head_h, 18, 12, bold=bool(body))
-        draw.text(sl, x, top + 0.15, colw, head_h, hp, hs, _title_color(t) if body else t.rgb("text"),
-                  t.title_font, bold=bool(body))
-        if body:
-            bp, bs = _fit(ctx, s.slide_number, [body], colw, CB - top - 0.95, 16, 11)
-            draw.text(sl, x, top + 0.9, colw, CB - top - 0.95, bp, bs, t.rgb("text"), t.body_font)
 
 
 def layout_key_insight(ctx: BuildContext, sl, s: Slide) -> None:
@@ -642,55 +599,6 @@ def layout_conclusion(ctx: BuildContext, sl, s: Slide) -> None:
         y += rh + gap
 
 
-def wants_panel(s: Slide, layout_mode: str) -> bool:
-    """Reading Layout panel on this slide? Not for dense diagrams or slides without an explanation."""
-    if layout_mode != "reading" or not any(panel_text(s)):
-        return False
-    # Side-by-side steps and card grids need the full width; stats tiles fit next to the panel up to 4.
-    limit = {"process": 4, "timeline": 4, "cards": 3}.get(s.layout_type, 5)
-    return not (s.layout_type in DENSE_LAYOUTS and len(s.items) >= limit)
-
-
-@contextmanager
-def _canvas(width: float):
-    """Draw a layout into a narrower content area (layouts read the module-level ``W``)."""
-    global W
-    previous, W = W, width
-    try:
-        yield
-    finally:
-        W = previous
-
-
-def reading_panel(ctx: BuildContext, sl, s: Slide, x0: float) -> None:
-    """Explanation panel on the right of a Reading Layout slide (editable text, no overflow)."""
-    t = ctx.theme
-    explanation, takeaway = panel_text(s)
-    w = FULL_W - x0
-    draw.shape(sl, x0, 0, w, H, t.rgb("surface")).name = "Reading panel"
-    draw.shape(sl, x0, 0, 0.06, H, t.rgb("accent")).name = "Reading panel accent"
-    px, pw = x0 + 0.4, w - 0.75
-    draw.text(sl, px, 0.55, pw, 0.4, ctx.labels["explain"], 12, t.rgb("accent"), t.body_font,
-              bold=True).name = "Reading panel label"
-    top, bottom = 1.05, 6.95
-    if takeaway:
-        inner = pw - 0.45
-        tp, ts = _fit(ctx, s.slide_number, [takeaway], inner, 1.8, 16, 12, bold=True)
-        box_h = min(2.6, text_height_in(tp, inner, ts, bold=True) + 0.65)
-        box_y = bottom - box_h
-        _card(ctx, sl, px, box_y, pw, box_h, fill_name="background").name = "Reading panel takeaway"
-        draw.shape(sl, px, box_y, 0.07, box_h, t.rgb("accent2"))
-        draw.text(sl, px + 0.2, box_y + 0.12, inner, 0.32, ctx.labels["takeaway"], 10, t.rgb("accent2"),
-                  t.body_font, bold=True).name = "Reading panel takeaway label"
-        draw.text(sl, px + 0.2, box_y + 0.45, inner, box_h - 0.5, tp, ts, t.rgb("text"), t.body_font,
-                  bold=True).name = "Reading panel takeaway text"
-        bottom = box_y - 0.3
-    if explanation:
-        ep, es = _fit(ctx, s.slide_number, [explanation], pw, bottom - top, 18, 13)
-        draw.text(sl, px, top, pw, bottom - top, ep, es, t.rgb("text"), t.body_font,
-                  space_after=0.6).name = "Reading panel text"
-
-
 LAYOUTS = {
     "title": layout_title,
     "agenda": layout_agenda,
@@ -745,15 +653,10 @@ def build_pptx(pres: Presentation, out_path: Path, style: str = "professional",
     """Render the deck to ``out_path``. Returns a list of non-fatal layout warnings.
 
     ``illustrations`` maps slide ids to image files from any image provider; they take
-    precedence over video frames on title and image slides. ``layout_mode="reading"`` adds a
-    short explanation panel beside the content; the full explanation always goes to the notes.
+    precedence over video frames on title and image slides. Every slide uses the full canvas;
+    the detailed explanation, takeaway and video timestamps go to the speaker notes only.
+    ``layout_mode`` is kept for API compatibility and does not change the slide canvas.
     """
-    with _canvas_lock:  # layouts share the module-level canvas width
-        return _build(pres, out_path, style, frames, illustrations, layout_mode)
-
-
-def _build(pres: Presentation, out_path: Path, style: str, frames: list[FrameRef] | None,
-           illustrations: dict[str, Path] | None, layout_mode: str) -> list[str]:
     frames = sorted(frames or [], key=lambda f: f.timestamp)
     illustrations = {k: v for k, v in (illustrations or {}).items() if v and Path(v).is_file()}
     theme = get_theme(style)
@@ -771,11 +674,7 @@ def _build(pres: Presentation, out_path: Path, style: str, frames: list[FrameRef
 
     for s in pres.slides:
         sl = prs.slides.add_slide(blank)
-        panel = wants_panel(s, layout_mode)
-        with _canvas(READING_CONTENT_W if panel else FULL_W):
-            LAYOUTS.get(s.layout_type, layout_bullets)(ctx, sl, s)
-        if panel:
-            reading_panel(ctx, sl, s, READING_CONTENT_W)
+        LAYOUTS.get(s.layout_type, layout_bullets)(ctx, sl, s)
         notes = speaker_notes_text(s, pres.language)
         if notes:
             sl.notes_slide.notes_text_frame.text = notes

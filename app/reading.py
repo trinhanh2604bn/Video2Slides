@@ -116,11 +116,6 @@ def _span_labels(slide: Slide) -> list[str]:
     return [fmt_clock(x) for x in sorted(set(slide.source_timestamps))[:6]]
 
 
-def panel_text(slide: Slide) -> tuple[str, str]:
-    """(explanation, takeaway) for the visible on-slide panel; both short by construction."""
-    return slide.brief_explanation or slide.reading_notes.summary, slide.reading_notes.key_takeaway
-
-
 def slide_payload(slide: Slide, transcript: Transcript | None) -> dict:
     """JSON for one slide in Reading Mode."""
     rn = slide.reading_notes

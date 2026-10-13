@@ -1,0 +1,12 @@
+{
+  "name": "video2slides",
+  "private": true,
+  "description": "npm shortcuts for the Python app (no Node dependencies). See docs/HUONG_DAN_SU_DUNG_VI.md.",
+  "scripts": {
+    "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install.ps1",
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/start.ps1",
+    "start:nobrowser": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/start.ps1 --no-browser",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/stop.ps1",
+    "test": ".venv\\Scripts\\python.exe -m pytest"
+  }
+}

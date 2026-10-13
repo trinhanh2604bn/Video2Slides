@@ -49,8 +49,8 @@ STRICT RULES
 8. Every slide must have content; no empty slides.
 
 READING NOTES (a reader must understand each slide WITHOUT watching the video):
-9. brief_explanation: 1-2 short sentences (<= 35 words) shown in a small panel beside the
-   slide. It says what the slide means or why it matters. Do not repeat the bullets.
+9. brief_explanation: 1-2 short sentences (<= 35 words) shown beside the slide preview in the
+   app's Reading Mode (never on the slide itself). It says what the slide means or why it matters. Do not repeat the bullets.
 10. reading_notes, written in the same language as the slides:
    - summary: one sentence stating the main idea of the slide.
    - detailed_explanation: 80-180 words in 2-3 short paragraphs separated by a blank line.

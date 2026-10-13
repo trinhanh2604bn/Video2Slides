@@ -100,7 +100,7 @@ class Slide(BaseModel):
     # English scene description for the AI illustration model (empty = no illustration wanted).
     image_prompt: str = ""
     # Reading experience (all optional so outlines generated before this feature still load).
-    brief_explanation: str = ""   # 1-2 sentences for the visible explanation panel on the slide
+    brief_explanation: str = ""   # 1-2 sentences shown beside the slide preview in Reading Mode
     reading_notes: ReadingNotes = Field(default_factory=ReadingNotes)
     source_ranges: list[TimeRange] = Field(default_factory=list, max_length=10)
 

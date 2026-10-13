@@ -49,6 +49,77 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
 };
 
+// ------------------------------------------------------------------ theme (system / light / dark)
+// The <head> script applies the saved choice before first paint; this keeps it live afterwards.
+const THEME_LABELS = { system: "Theo hệ thống", light: "Sáng", dark: "Tối" };
+const darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+function applyTheme(pref) {
+  if (!THEME_LABELS[pref]) pref = "system";
+  const dark = pref === "dark" || (pref === "system" && Boolean(darkQuery && darkQuery.matches));
+  const root = document.documentElement;
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+  root.setAttribute("data-theme-pref", pref);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = dark ? "#1B1A17" : "#F3F1E8";
+  $("themeBtn").setAttribute("aria-label", `Giao diện: ${THEME_LABELS[pref]}`);
+  $("themeBtn").title = `Giao diện: ${THEME_LABELS[pref]}`;
+  for (const b of $("themeList").querySelectorAll("[data-theme-option]")) {
+    b.setAttribute("aria-checked", String(b.dataset.themeOption === pref));
+  }
+}
+
+function setTheme(pref) {
+  store.set("theme", pref);
+  applyTheme(pref);
+}
+
+function themePref() {
+  return document.documentElement.getAttribute("data-theme-pref") || "system";
+}
+
+function toggleThemeMenu(open, focusItem = false) {
+  const list = $("themeList");
+  list.hidden = !open;
+  $("themeBtn").setAttribute("aria-expanded", String(open));
+  if (open && focusItem) (list.querySelector('[aria-checked="true"]') || list.querySelector("button")).focus();
+}
+
+function setupTheme() {
+  applyTheme(store.get("theme") || "system");
+  const btn = $("themeBtn"), list = $("themeList");
+  btn.addEventListener("click", () => toggleThemeMenu(list.hidden, true));
+  btn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); toggleThemeMenu(true, true); }
+  });
+  list.addEventListener("click", (e) => {
+    const opt = e.target.closest("[data-theme-option]");
+    if (!opt) return;
+    setTheme(opt.dataset.themeOption);
+    toggleThemeMenu(false);
+    btn.focus();
+  });
+  list.addEventListener("keydown", (e) => {
+    const items = [...list.querySelectorAll("button")];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    else if (e.key === "Home") { e.preventDefault(); items[0].focus(); }
+    else if (e.key === "End") { e.preventDefault(); items[items.length - 1].focus(); }
+    else if (e.key === "Escape" || e.key === "Tab") { toggleThemeMenu(false); if (e.key === "Escape") btn.focus(); }
+    e.stopPropagation();
+  });
+  document.addEventListener("click", (e) => { if (!list.hidden && !$("themeMenu").contains(e.target)) toggleThemeMenu(false); });
+  // Follow the OS setting live while "system" is selected.
+  if (darkQuery) {
+    const onChange = () => { if (themePref() === "system") applyTheme("system"); };
+    if (darkQuery.addEventListener) darkQuery.addEventListener("change", onChange);
+    else if (darkQuery.addListener) darkQuery.addListener(onChange);
+  }
+  // Another tab changed the theme.
+  window.addEventListener("storage", (e) => { if (e.key === "theme") applyTheme(e.newValue || "system"); });
+}
+
 // ------------------------------------------------------------------ API helpers
 function authHeaders() {
   const pw = store.get("appPassword", true);
@@ -144,7 +215,7 @@ async function init() {
   if (ui.enabled) $("urlLimits").textContent = `${Math.round(ui.max_duration_sec / 60)} phút, ${ui.max_download_mb} MB`;
 
   setupAiImages(c.ai_images || {});
-  const dm = c.default_layout_mode || "reading";
+  const dm = c.default_layout_mode || "presentation";
   const radio = document.querySelector(`input[name="layoutMode"][value="${dm}"]`);
   if (radio) radio.checked = true;
   setGoogle(c.google);
@@ -197,7 +268,7 @@ function aiImagesChosen() {
   return !$("aiImagesField").hidden && $("aiImagesCheck").checked && !$("aiImagesCheck").disabled;
 }
 function layoutModeChosen() {
-  return (document.querySelector('input[name="layoutMode"]:checked') || {}).value || "reading";
+  return (document.querySelector('input[name="layoutMode"]:checked') || {}).value || "presentation";
 }
 function googleChosen() {
   return !$("googleField").hidden && $("googleCheck").checked && !$("googleCheck").disabled;
@@ -379,6 +450,9 @@ function setMode(mode) {
   state.mode = mode;
   $("tabFile").setAttribute("aria-selected", String(mode === "file"));
   $("tabUrl").setAttribute("aria-selected", String(mode === "url"));
+  // Roving tabindex: only the selected tab is in the Tab order; arrow keys move between tabs.
+  $("tabFile").tabIndex = mode === "file" ? 0 : -1;
+  $("tabUrl").tabIndex = mode === "url" ? 0 : -1;
   $("filePanel").hidden = mode !== "file";
   $("urlPanel").hidden = mode !== "url";
   updateSubmit();
@@ -859,6 +933,14 @@ async function loadPreview() {
   showSlide(0);
 }
 
+// Scroll a thumbnail strip horizontally only, so selecting a slide never jumps the whole page.
+function revealThumb(b) {
+  const strip = b.parentElement;
+  const left = b.offsetLeft - strip.offsetLeft;
+  if (left < strip.scrollLeft) strip.scrollLeft = left;
+  else if (left + b.offsetWidth > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = left + b.offsetWidth - strip.clientWidth;
+}
+
 function showSlide(i) {
   if (!preview.urls.length) return;
   preview.index = Math.max(0, Math.min(preview.urls.length - 1, i));
@@ -870,7 +952,7 @@ function showSlide(i) {
   $("previewNext").disabled = n === preview.urls.length - 1;
   $("previewStrip").querySelectorAll("button").forEach((b, k) => {
     b.setAttribute("aria-current", String(k === n));
-    if (k === n) b.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (k === n) revealThumb(b);
   });
 }
 
@@ -1074,7 +1156,7 @@ function goTo(i, updateHash = true) {
   renderReaderNotes(s, n);
   $("readerStrip").querySelectorAll("button").forEach((b, k) => {
     b.setAttribute("aria-current", String(k === n));
-    if (k === n) b.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (k === n) revealThumb(b);
   });
   if (updateHash) history.replaceState(null, "", `#read=${reader.jobId}&s=${n + 1}`);
   // Warm the next image so navigation feels instant.
@@ -1279,6 +1361,13 @@ const dz = $("dropzone");
 dz.addEventListener("drop", (e) => selectFile(e.dataTransfer.files[0]));
 $("tabFile").addEventListener("click", () => setMode("file"));
 $("tabUrl").addEventListener("click", () => setMode("url"));
+$("sourceTabs").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  e.preventDefault();
+  const mode = e.key === "Home" ? "file" : e.key === "End" ? "url" : state.mode === "file" ? "url" : "file";
+  setMode(mode);
+  $(mode === "file" ? "tabFile" : "tabUrl").focus();
+});
 $("urlInput").addEventListener("input", onUrlInput);
 $("urlInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); validateUrl(); } });
 $("validateUrlBtn").addEventListener("click", validateUrl);
@@ -1355,4 +1444,5 @@ window.addEventListener("hashchange", () => {
   route();
 });
 
+setupTheme();
 init();

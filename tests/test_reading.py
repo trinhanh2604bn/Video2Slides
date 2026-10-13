@@ -1,4 +1,4 @@
-"""Reading notes (schema, transcript fallback, notes text), Reading Layout in the PPTX, library."""
+"""Reading notes (schema, transcript fallback, notes text), full-width slides + notes in the PPTX, library."""
 
 import dataclasses
 import json
@@ -6,12 +6,13 @@ import time
 
 import pytest
 from pptx import Presentation as PptxPresentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu
 
 from app import jobs, library
 from app.ai.schema import Presentation, TimeRange, gemini_response_schema
 from app.pptx_engine import build_pptx, validate_pptx
-from app.pptx_engine.builder import READING_CONTENT_W
+from app.pptx_engine.builder import FULL_W, H
 from app.reading import ensure_reading_notes, slide_payload, speaker_notes_text, transcript_excerpt
 from app.transcribe import Segment, Transcript
 from tests.sample_outline import SAMPLE, full_presentation, sample_presentation
@@ -96,44 +97,49 @@ def _explained(style="professional"):
     return pres
 
 
+SIDEBAR_LABELS = ("GIẢI THÍCH", "EXPLANATION")
+
+
+def _illustrations(tmp_path, pres):
+    from PIL import Image
+    img = tmp_path / "illus.png"
+    Image.new("RGB", (1344, 768), (90, 120, 160)).save(img)
+    return {s.slide_id: img for s in pres.slides if s.layout_type in ("title", "concept", "image_left")}
+
+
 @pytest.mark.parametrize("style", ["professional", "academic", "creative"])
-def test_reading_layout_keeps_content_left_of_the_panel(tmp_path, style):
+@pytest.mark.parametrize("mode", ["reading", "presentation"])
+def test_slides_use_full_canvas_without_explanation_sidebar(tmp_path, style, mode):
+    """Regression: no explanation panel is drawn on the slide; explanations stay in the notes."""
     pres = _explained()
-    out = tmp_path / f"{style}.pptx"
-    build_pptx(pres, out, style, [], layout_mode="reading")
+    out = tmp_path / f"{style}-{mode}.pptx"
+    build_pptx(pres, out, style, [], illustrations=_illustrations(tmp_path, pres), layout_mode=mode)
     report = validate_pptx(out, expected_slides=len(pres.slides))
     assert report.ok, report.errors
-    panel_x = READING_CONTENT_W
-    with_panel = 0
-    for idx, (sl, s) in enumerate(zip(PptxPresentation(str(out)).slides, pres.slides), start=1):
-        names = [sh.name for sh in sl.shapes]
-        if "Reading panel" not in names:
-            continue
-        with_panel += 1
-        texts = [sh.text_frame.text for sh in sl.shapes if sh.name == "Reading panel text"]
-        assert texts and "Giải thích ngắn gọn" in texts[0]
-        for sh in sl.shapes:
-            if sh.has_text_frame and sh.text_frame.text.strip() and not sh.name.startswith("Reading panel"):
-                right = Emu(sh.left + sh.width).inches
-                assert right <= panel_x + 0.01, f"slide {idx}: '{sh.text_frame.text[:30]}' overlaps the panel"
+    deck = PptxPresentation(str(out))
+    assert round(deck.slide_width / deck.slide_height, 3) == round(16 / 9, 3)
+    assert len({s.layout_type for s in pres.slides}) >= 5
+    for idx, (sl, s) in enumerate(zip(deck.slides, pres.slides), start=1):
+        texts = [sh.text_frame.text for sh in sl.shapes if sh.has_text_frame and sh.text_frame.text.strip()]
+        assert not any(sh.name.startswith("Reading panel") for sh in sl.shapes), f"slide {idx} has a sidebar"
+        assert not any(t.strip() in SIDEBAR_LABELS for t in texts), f"slide {idx} has an explanation label"
+        joined = "\n".join(texts)
+        for note_only in ("Giải thích ngắn gọn", "Giải thích chi tiết", "Một điều cần nhớ"):
+            assert note_only not in joined, f"slide {idx}: notes text duplicated on the canvas"
+        for sh in sl.shapes:  # text and pictures stay on the 16:9 canvas (decorative shapes may bleed)
+            if (sh.has_text_frame and sh.text_frame.text.strip()) or sh.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                assert Emu(sh.left).inches >= -0.01 and Emu(sh.left + sh.width).inches <= FULL_W + 0.01
+                assert Emu(sh.top).inches >= -0.01 and Emu(sh.top + sh.height).inches <= H + 0.01
+        if s.layout_type not in ("title", "section", "conclusion"):
+            right = max(Emu(sh.left + sh.width).inches for sh in sl.shapes
+                        if sh.has_text_frame and sh.text_frame.text.strip())
+            assert right > 10.0, f"slide {idx} ({s.layout_type}) leaves the right side of the canvas empty"
         notes = sl.notes_slide.notes_text_frame.text
         assert f"Giải thích chi tiết về {s.title}" in notes
-    dense = sum(1 for s in pres.slides if s.layout_type in ('process', 'timeline', 'cards') and len(s.items) >= 3)
-    assert dense == 3 and with_panel == len(pres.slides) - dense  # dense diagrams stay full width
-
-
-def test_dense_diagrams_and_presentation_mode_have_no_panel(tmp_path):
-    pres = _explained()
-    out = tmp_path / "r.pptx"
-    build_pptx(pres, out, "professional", [], layout_mode="reading")
-    slides = PptxPresentation(str(out)).slides
-    process_idx = next(i for i, s in enumerate(pres.slides) if s.layout_type == "process")  # 5 steps
-    assert "Reading panel" not in [sh.name for sh in slides[process_idx].shapes]
-    out2 = tmp_path / "p.pptx"
-    build_pptx(_explained(), out2, "professional", [], layout_mode="presentation")
-    for sl in PptxPresentation(str(out2)).slides:
-        assert "Reading panel" not in [sh.name for sh in sl.shapes]
-        assert sl.notes_slide.notes_text_frame.text  # explanation still in the notes
+        assert "Ý chính cần nhớ: Một điều cần nhớ ngắn gọn." in notes
+        if s.source_timestamps or s.source_ranges:
+            assert "Thời điểm trong video:" in notes
+        assert notes == speaker_notes_text(s, pres.language)
 
 
 def test_library_roundtrip_and_finished_jobs_are_kept(monkeypatch):

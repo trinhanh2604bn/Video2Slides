@@ -146,8 +146,8 @@ class Settings:
     # Enables /api/admin/* (usage report, kill switch). Empty = admin API disabled.
     admin_token: str = field(default_factory=lambda: os.environ.get("ADMIN_TOKEN", ""))
 
-    # Default slide layout: reading = content + explanation panel, presentation = full-width slides
-    default_layout_mode: str = field(default_factory=lambda: os.environ.get("DEFAULT_LAYOUT_MODE", "reading").lower())
+    # Kept for compatibility: slides are always full width, explanations go to the speaker notes
+    default_layout_mode: str = field(default_factory=lambda: os.environ.get("DEFAULT_LAYOUT_MODE", "presentation").lower())
 
     # Google Slides output (OAuth "Desktop app" client; the JSON is downloaded from Google Cloud Console)
     google_slides_enabled: bool = field(default_factory=lambda: _bool("GOOGLE_SLIDES_ENABLED", True))

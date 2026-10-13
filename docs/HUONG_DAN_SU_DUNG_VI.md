@@ -43,11 +43,9 @@ Chạy lại `install.bat` bất cứ lúc nào cũng an toàn: không xóa dữ
    tab **Dán URL** và dán liên kết YouTube / Facebook.
 2. Chọn ngôn ngữ video, số slide (hoặc *Tự động đề xuất*), phong cách:
    **Professional** (doanh nghiệp), **Academic** (giáo dục, nghiên cứu), **Creative** (marketing).
-3. Chọn **Bố cục slide**:
-   * **Chế độ đọc** (mặc định): nội dung/hình bên trái, khung giải thích ngắn bên phải — người đọc
-     hiểu được slide mà không cần xem lại video.
-   * **Chế độ trình chiếu**: slide toàn khổ truyền thống.
-   Ở cả hai chế độ, phần giải thích đầy đủ luôn nằm trong **ghi chú thuyết trình (Speaker Notes)**.
+3. **Bố cục slide**: mọi slide đều dùng toàn bộ khổ 16:9, không có khung giải thích trên slide.
+   Phần giải thích chi tiết, ý chính cần nhớ và thời điểm trong video luôn nằm trong
+   **ghi chú thuyết trình (Speaker Notes)** và trong **Chế độ đọc** trên web.
 4. Bật/tắt **Google Slides** (cần kết nối Google một lần — xem mục 3b) và **Ảnh minh họa AI**.
 5. Bấm **Tạo bài trình chiếu** và theo dõi từng bước. Thanh tiến độ chỉ hiện số đo thật
    (số giây âm thanh đã nhận dạng, số ảnh đã tạo xong). Có thể bấm **Hủy xử lý** bất cứ lúc nào.

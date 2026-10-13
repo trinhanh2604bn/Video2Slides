@@ -129,7 +129,7 @@ def public_config() -> dict:
         "ai_images": _ai_images_config(),
         "layout_modes": list(LAYOUT_MODES),
         "default_layout_mode": settings.default_layout_mode if settings.default_layout_mode in LAYOUT_MODES
-        else "reading",
+        else "presentation",
         "google": google_auth.status(),
         "url_import": {
             "enabled": settings.url_import_enabled,

@@ -5,84 +5,148 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Video2Slides</title>
   <meta name="description" content="Chuyển video thành bài trình chiếu Google Slides / PowerPoint chuyên nghiệp kèm phần giải thích bằng AI">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232F80ED'/><rect x='7' y='9' width='18' height='12' rx='2' fill='white'/><rect x='14' y='22' width='4' height='3' fill='white'/></svg>">
+  <meta name="theme-color" content="#F3F1E8">
+  <script>
+    // Apply the saved theme before first paint (no light/dark flash). app.js keeps it in sync afterwards.
+    (function () {
+      var pref;
+      try { pref = localStorage.getItem("theme"); } catch (e) { /* storage blocked */ }
+      if (pref !== "light" && pref !== "dark") pref = "system";
+      var dark = pref === "dark" || (pref === "system" && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme-pref", pref);
+    })();
+  </script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23A95A22'/><rect x='7' y='9' width='18' height='12' rx='2' fill='%23FAF9F3'/><rect x='14' y='22' width='4' height='3' fill='%23FAF9F3'/></svg>">
+  <!-- Web fonts with Vietnamese subsets; system fallbacks keep the app usable fully offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600&family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500;1,600&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Bỏ qua đến nội dung chính</a>
   <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="currentColor"/><rect x="7" y="9" width="18" height="12" rx="2" fill="#fff"/><path d="M14 12.5v6l5-3z" fill="currentColor"/></svg>
-      </span>
-      <span>Video2Slides</span>
-    </div>
-    <div class="top-actions">
-      <button type="button" class="btn ghost top-btn" id="libraryBtn">Bài đã tạo</button>
-      <span class="provider" id="providerBadge" hidden></span>
-      <button type="button" class="google-chip" id="googleChip" hidden>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2" fill="#F4B400"/><rect x="8" y="9" width="8" height="6" rx="1" fill="#fff"/></svg>
-        <span id="googleChipText">Kết nối Google</span>
-      </button>
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="currentColor"/><rect x="7" y="9" width="18" height="12" rx="2" fill="#FAF9F3"/><path d="M14 12.5v6l5-3z" fill="currentColor"/></svg>
+        </span>
+        <span>Video2Slides</span>
+      </div>
+      <div class="top-actions">
+        <span class="tagline">Từ video dài đến bài trình chiếu</span>
+        <button type="button" class="btn ghost top-btn" id="libraryBtn" title="Bài đã tạo">
+          <svg class="top-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h10.5a1.5 1.5 0 0 1 1.5 1.5v13.5H6.5A1.5 1.5 0 0 1 5 18zM17 7.5h2v12M8.5 8.5h5m-5 3h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="top-btn-text">Bài đã tạo</span>
+        </button>
+        <span class="provider" id="providerBadge" hidden></span>
+        <button type="button" class="google-chip" id="googleChip" hidden>
+          <span class="chip-dot" aria-hidden="true"></span>
+          <span id="googleChipText">Kết nối Google</span>
+        </button>
+        <div class="theme-menu" id="themeMenu">
+          <button type="button" class="icon-btn" id="themeBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="themeList" aria-label="Giao diện: Theo hệ thống" title="Giao diện">
+            <svg class="ic-system" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="11.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 20h6m-3-4v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <svg class="ic-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <svg class="ic-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="theme-list" id="themeList" role="menu" aria-label="Chọn giao diện" hidden>
+            <button type="button" role="menuitemradio" data-theme-option="system" aria-checked="true" tabindex="-1">Theo hệ thống</button>
+            <button type="button" role="menuitemradio" data-theme-option="light" aria-checked="false" tabindex="-1">Sáng</button>
+            <button type="button" role="menuitemradio" data-theme-option="dark" aria-checked="false" tabindex="-1">Tối</button>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
-  <main class="container">
+  <main class="container" id="main">
     <!-- Password gate (only when APP_PASSWORD is configured) -->
-    <section id="authView" class="card" hidden>
-      <h1>Nhập mật khẩu truy cập</h1>
-      <form id="authForm" class="row">
+    <section id="authView" class="card narrow" hidden>
+      <p class="step-label">Truy cập riêng tư</p>
+      <h1 class="card-title">Nhập mật khẩu truy cập</h1>
+      <form id="authForm" class="row auth-row">
+        <label class="sr-only" for="authInput">Mật khẩu</label>
         <input id="authInput" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
         <button class="btn primary" type="submit">Tiếp tục</button>
       </form>
-      <p class="error" id="authError" hidden></p>
+      <p class="error" id="authError" role="alert" hidden></p>
     </section>
 
     <!-- Upload + settings -->
     <section id="uploadView" hidden>
       <div class="hero">
-        <h1>Biến video thành bài trình chiếu chuyên nghiệp</h1>
+        <p class="eyebrow-line">Ghi chú video, có ngữ cảnh</p>
+        <h1>Biến video dài thành <em>kiến thức đọng lại.</em></h1>
         <p>Tải lên video MP4 hoặc dán liên kết YouTube/Facebook — hệ thống sẽ nghe nội dung, tóm tắt ý chính, thiết kế bài Google Slides / PowerPoint có thể chỉnh sửa và viết phần giải thích cho từng slide.</p>
+        <ol class="flow" aria-label="Quy trình">
+          <li>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Nguồn video
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M6 6l2 2m8 8 2 2M6 18l2-2m8-8 2-2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            Chắt lọc ý chính
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 16v3m-4 0h8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            Slide &amp; giải thích
+          </li>
+        </ol>
       </div>
 
-      <form id="uploadForm" class="card" novalidate>
+      <form id="uploadForm" class="card workspace" novalidate>
+        <div class="card-head">
+          <div>
+            <p class="step-label">01 / Bắt đầu</p>
+            <h2 class="card-title">Bạn muốn học từ video nào?</h2>
+          </div>
+          <span class="card-index" aria-hidden="true">V2S / 01</span>
+        </div>
+
         <div class="source-tabs" role="tablist" aria-label="Chọn nguồn video" id="sourceTabs">
           <button type="button" role="tab" class="source-tab" id="tabFile" aria-selected="true" aria-controls="filePanel">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Tải video lên
           </button>
-          <button type="button" role="tab" class="source-tab" id="tabUrl" aria-selected="false" aria-controls="urlPanel">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <button type="button" role="tab" class="source-tab" id="tabUrl" aria-selected="false" aria-controls="urlPanel" tabindex="-1">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Dán URL
           </button>
         </div>
 
-        <div id="filePanel" role="tabpanel" aria-labelledby="tabFile">
+        <div id="filePanel" class="source-panel" role="tabpanel" aria-labelledby="tabFile">
         <label class="dropzone" id="dropzone" for="fileInput">
-          <input id="fileInput" type="file" accept="video/mp4,.mp4" hidden>
-          <svg class="dz-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <input id="fileInput" type="file" accept="video/mp4,.mp4" class="sr-only">
+          <svg class="dz-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <strong>Kéo thả video vào đây</strong>
           <span>hoặc <u>chọn tệp từ máy</u></span>
           <small id="limitsText"></small>
         </label>
 
         <div class="file-info" id="fileInfo" hidden>
+          <svg class="file-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 9.5v5l4.2-2.5z" fill="currentColor"/></svg>
           <div class="file-meta">
             <strong id="fileName"></strong>
             <span id="fileDetails"></span>
           </div>
           <button type="button" class="btn ghost" id="clearFile">Đổi tệp</button>
         </div>
-        <p class="error" id="fileError" hidden></p>
+        <p class="error" id="fileError" role="alert" hidden></p>
         </div>
 
-        <div id="urlPanel" role="tabpanel" aria-labelledby="tabUrl" hidden>
+        <div id="urlPanel" class="source-panel" role="tabpanel" aria-labelledby="tabUrl" hidden>
           <label class="field" for="urlInput">
             <span>Liên kết video YouTube hoặc Facebook</span>
           </label>
           <div class="url-row">
-            <span class="platform-chip" id="platformChip" hidden></span>
-            <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="2048"
-                   placeholder="https://www.youtube.com/watch?v=… hoặc https://www.facebook.com/reel/…">
+            <div class="input-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="2048"
+                     placeholder="https://www.youtube.com/watch?v=… hoặc https://www.facebook.com/reel/…" aria-describedby="urlHint">
+              <span class="platform-chip" id="platformChip" hidden></span>
+            </div>
             <button type="button" class="btn" id="validateUrlBtn" disabled>Kiểm tra URL</button>
           </div>
           <small class="hint" id="urlHint">Hỗ trợ: YouTube (video, Shorts, youtu.be) và Facebook (video công khai, Watch, Reels, fb.watch). Tối đa <span id="urlLimits"></span>.</small>
@@ -99,14 +163,19 @@
               <a class="small src-link" id="videoLink" target="_blank" rel="noopener noreferrer nofollow"></a>
             </div>
           </div>
-          <div class="access" id="urlStatus" hidden></div>
+          <div class="access" id="urlStatus" role="status" hidden></div>
 
           <label class="consent" id="consentRow" hidden>
             <input type="checkbox" id="rightsCheck">
             <span>Tôi xác nhận mình là chủ sở hữu nội dung hoặc đã được phép xử lý video này, và việc tải video tuân thủ điều khoản của nền tảng.</span>
           </label>
-          <p class="error" id="urlError" hidden></p>
+          <p class="error" id="urlError" role="alert" hidden></p>
           <button type="button" class="btn ghost small-btn" id="useUploadBtn" hidden>Chuyển sang tải tệp MP4 lên</button>
+        </div>
+
+        <div class="section-head">
+          <p class="step-label">02 / Thiết lập</p>
+          <h3>Bài trình chiếu của bạn</h3>
         </div>
 
         <div class="settings">
@@ -133,36 +202,36 @@
             <legend>Bố cục slide</legend>
             <div class="mode-opts" id="layoutModeOptions">
               <label class="mode-opt">
-                <input type="radio" name="layoutMode" value="reading" checked>
+                <input type="radio" name="layoutMode" value="reading">
                 <span class="mode-card">
-                  <span class="mode-thumb reading" aria-hidden="true"><i></i><b></b></span>
+                  <span class="mode-thumb" aria-hidden="true"><i></i></span>
                   <span class="style-name">Chế độ đọc</span>
-                  <span class="style-desc">Nội dung bên trái, khung giải thích ngắn bên phải — dễ hiểu khi đọc một mình</span>
+                  <span class="style-desc">Slide toàn khổ; xem giải thích chi tiết cạnh slide trong Chế độ đọc trên web</span>
                 </span>
               </label>
               <label class="mode-opt">
-                <input type="radio" name="layoutMode" value="presentation">
+                <input type="radio" name="layoutMode" value="presentation" checked>
                 <span class="mode-card">
                   <span class="mode-thumb" aria-hidden="true"><i></i></span>
                   <span class="style-name">Chế độ trình chiếu</span>
-                  <span class="style-desc">Slide toàn khổ truyền thống; giải thích nằm trong ghi chú người thuyết trình</span>
+                  <span class="style-desc">Slide toàn khổ; giải thích nằm trong ghi chú người thuyết trình (Speaker Notes)</span>
                 </span>
               </label>
             </div>
           </fieldset>
-          <fieldset class="field wide" id="googleField" hidden>
+          <fieldset class="field wide option-row" id="googleField" hidden>
             <legend>Google Slides</legend>
             <label class="toggle">
-              <input type="checkbox" id="googleCheck">
+              <input type="checkbox" id="googleCheck" role="switch">
               <span>Tự động tạo bản Google Slides gốc (chỉnh sửa được) trong Google Drive của bạn</span>
             </label>
             <small id="googleHint"></small>
           </fieldset>
-          <fieldset class="field wide ai-images" id="aiImagesField" hidden>
+          <fieldset class="field wide option-row ai-images" id="aiImagesField" hidden>
             <legend>Ảnh minh họa AI</legend>
             <div class="ai-row">
               <label class="toggle">
-                <input type="checkbox" id="aiImagesCheck" checked>
+                <input type="checkbox" id="aiImagesCheck" role="switch" checked>
                 <span>Tự động tạo ảnh minh họa bằng AI (mô hình mã nguồn mở tự triển khai)</span>
               </label>
               <label class="inline-select">
@@ -178,25 +247,27 @@
         </div>
 
         <div class="actions">
-          <button class="btn primary lg" type="submit" id="submitBtn" disabled>Tạo bài trình chiếu</button>
+          <p class="actions-note">Tệp PowerPoint (.pptx) luôn được tạo; Google Slides là tùy chọn.</p>
+          <button class="btn primary lg btn-arrow" type="submit" id="submitBtn" disabled>Tạo bài trình chiếu</button>
         </div>
       </form>
     </section>
 
     <!-- Processing -->
-    <section id="processView" class="card" hidden>
-      <h2 id="processTitle">Đang xử lý video</h2>
-      <p class="muted" id="processFile"></p>
-      <ol class="stages" id="stageList"></ol>
+    <section id="processView" class="card process" hidden>
+      <p class="step-label">Tiến trình</p>
+      <h2 id="processTitle" class="card-title">Đang xử lý video</h2>
+      <p class="muted process-file" id="processFile"></p>
+      <ol class="stages" id="stageList" aria-live="polite"></ol>
       <div class="progress" id="stageProgress" hidden>
         <div class="progress-bar"><span id="stageProgressFill"></span></div>
         <span class="muted small" id="stageProgressText"></span>
       </div>
-      <p class="muted small" id="queueNote" hidden></p>
+      <p class="muted small queue-note" id="queueNote" hidden></p>
       <div class="row" id="cancelRow">
         <button class="btn ghost" id="cancelBtn" type="button">Hủy xử lý</button>
       </div>
-      <div class="error-box" id="processError" hidden>
+      <div class="error-box" id="processError" role="alert" hidden>
         <p id="processErrorText"></p>
         <div class="row">
           <button class="btn primary" id="retryBtn" type="button">Thử lại</button>
@@ -210,7 +281,7 @@
       <div class="card result">
         <div class="result-head">
           <span class="check" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </span>
           <div>
             <p class="eyebrow">Hoàn tất</p>
@@ -224,7 +295,7 @@
           <div><dt>Ngôn ngữ</dt><dd id="resultLang"></dd></div>
         </dl>
         <p class="muted small" id="resultIllus" hidden></p>
-        <div class="notice" id="resultNotice" hidden></div>
+        <div class="notice" id="resultNotice" role="status" hidden></div>
         <div class="layouts" id="resultLayouts"></div>
         <div class="google-box" id="googleBox" hidden>
           <div class="google-box-text">
@@ -234,7 +305,7 @@
           <div class="row" id="googleBoxActions"></div>
         </div>
         <div class="row result-actions">
-          <a class="btn primary lg" id="openGoogleBtn" target="_blank" rel="noopener noreferrer" hidden>Mở trong Google Slides</a>
+          <a class="btn primary lg btn-ext" id="openGoogleBtn" target="_blank" rel="noopener noreferrer" hidden>Mở trong Google Slides</a>
           <button class="btn lg" id="readBtn" type="button">Chế độ đọc</button>
           <button class="btn ghost" id="downloadBtn" type="button">Tải PowerPoint (.pptx)</button>
           <button class="btn ghost" id="transcriptBtn" type="button">Xem bản ghi lời nói</button>
@@ -243,8 +314,11 @@
       </div>
       <div class="card" id="previewCard" hidden>
         <div class="preview-head">
-          <h3>Xem trước bài trình chiếu</h3>
-          <span class="muted small" id="previewCounter"></span>
+          <div>
+            <p class="step-label">Xem trước</p>
+            <h3>Xem trước bài trình chiếu</h3>
+          </div>
+          <span class="muted small counter" id="previewCounter"></span>
         </div>
         <p class="muted small" id="previewNote" hidden></p>
         <div class="preview-stage" id="previewStage" hidden>
@@ -255,13 +329,15 @@
         <div class="preview-strip" id="previewStrip" role="list"></div>
       </div>
       <div class="card" id="illusCard" hidden>
+        <p class="step-label">Minh họa</p>
         <h3>Ảnh minh họa AI</h3>
         <p class="muted small" id="illusNote"></p>
         <div class="illus-grid" id="illusGrid"></div>
       </div>
       <div class="card transcript" id="transcriptCard" hidden>
+        <p class="step-label">Nguồn</p>
         <h3>Bản ghi lời nói</h3>
-        <div id="transcriptBody" class="transcript-body"></div>
+        <div id="transcriptBody" class="transcript-body" tabindex="0"></div>
       </div>
     </section>
 
@@ -279,7 +355,7 @@
           <button type="button" class="btn ghost" id="readerFull" title="Toàn màn hình (F)">Toàn màn hình</button>
         </div>
       </div>
-      <div class="notice" id="readerNotice" hidden></div>
+      <div class="notice" id="readerNotice" role="status" hidden></div>
       <div class="reader">
         <div class="reader-left">
           <div class="reader-stage" id="readerStage">
@@ -299,7 +375,10 @@
     <section id="libraryView" hidden>
       <div class="card">
         <div class="preview-head">
-          <h2>Bài trình chiếu đã tạo</h2>
+          <div>
+            <p class="step-label">Thư viện</p>
+            <h2 class="card-title">Bài trình chiếu đã tạo</h2>
+          </div>
           <button type="button" class="btn ghost" id="libraryClose">Tạo bài mới</button>
         </div>
         <p class="muted small" id="libraryNote"></p>

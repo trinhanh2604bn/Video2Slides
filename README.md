@@ -5,7 +5,8 @@ presentation — **native Google Slides** in your own Drive and/or PowerPoint �
 for every slide (speaker notes + a synchronized side-by-side Reading Mode).
 
 **Runs locally on Windows** (no Replit, no domain needed): double-click `install.bat` once, then
-`start.bat`. Vietnamese user guide: [docs/HUONG_DAN_SU_DUNG_VI.md](docs/HUONG_DAN_SU_DUNG_VI.md).
+`start.bat`. With Node.js installed you can use `npm run setup` (once), `npm start`, `npm run stop`
+and `npm test` instead. Vietnamese user guide: [docs/HUONG_DAN_SU_DUNG_VI.md](docs/HUONG_DAN_SU_DUNG_VI.md).
 
 ```
 MP4 upload / YouTube·Facebook link (yt-dlp)
@@ -36,7 +37,7 @@ MP4 upload / YouTube·Facebook link (yt-dlp)
 | Jobs | Stage-based progress with measured values only (decoded audio seconds, finished images), cancel, duplicate-upload detection, retry reusing cached transcript/outline/images, auto-cleanup after `JOB_TTL_HOURS` |
 | AI illustrations (optional) | Gemini writes an English `image_prompt` per suitable slide; a planner applies one shared style per deck; a private SDXL 1.0 worker on Modal (L4, scale-to-zero, max 1 GPU) draws them; images are validated, cached and inserted beside editable text. Budgets, daily/monthly limits and a kill switch. Setup: [docs/AI_ILLUSTRATIONS_SETUP_VI.md](docs/AI_ILLUSTRATIONS_SETUP_VI.md) |
 | Reading notes | For every slide Gemini also writes a brief explanation (≤ 35 words), a detailed explanation (80–180 words), examples the speaker actually gave, a key takeaway and source time ranges. Older outlines / offline mode fall back to the transcript spans of the slide |
-| Layout modes | **Reading** (default): content on the left ~63 %, a short explanation panel on the right; dense diagrams (≥ 4 steps, ≥ 5 cards) stay full width. **Presentation**: classic full-width slides. Full narration always goes into the speaker notes |
+| Slide canvas | Every slide uses the full 16:9 canvas; there is no explanation panel on the slide. The detailed explanation, examples, key takeaway and video timestamps go into the speaker notes (PPTX and Google Slides) and the in-app Reading Mode. `layout_mode` is still accepted for compatibility |
 | Google Slides | OAuth (Desktop client, loopback + PKCE, scope `drive.file` only, token in `data/google/token.json`). The finished .pptx is uploaded with conversion to a native, editable Google Slides file, read back through the Slides API and validated (slide count, 16:9, pictures, titles); speaker notes are compared per slide and rewritten via `speakerNotesObjectId` when missing, then verified. Idempotent (Drive `appProperties`), never overwrites an existing presentation, retries 429/5xx, reuses the existing AI images. Setup: [docs/GOOGLE_SLIDES_SETUP_VI.md](docs/GOOGLE_SLIDES_SETUP_VI.md) |
 | Reading Mode | Slide image (local PowerPoint render, else cached Google thumbnail, else a text card) beside the explanation; prev/next, thumbnails, ← → / Home / End / F, swipe, fullscreen, counter, progress, timestamps, transcript excerpt; stacks on phones. A read-only "check sync" reports slides deleted/added/reordered or notes edited in Google Slides |
 | Library | "Bài đã tạo": reopen earlier decks in Reading Mode / Google Slides / re-download (`KEEP_FINISHED_PRESENTATIONS`) |
@@ -114,7 +115,7 @@ use its secret store instead. Main variables:
 | `GEMINI_API_KEY` | – | Free key from Google AI Studio (see below). Without it the app uses the offline outline. |
 | `GEMINI_MODEL` | `gemini-flash-latest` | Any model your key can call, e.g. a specific Flash / Flash-Lite version |
 | `GEMINI_FALLBACK_MODELS` | `gemini-flash-lite-latest` | Comma list tried when the main model answers 503 (overloaded) |
-| `DEFAULT_LAYOUT_MODE` | `reading` | `reading` / `presentation` |
+| `DEFAULT_LAYOUT_MODE` | `presentation` | `reading` / `presentation` (both render full-width slides) |
 | `YOUTUBE_RETRIEVAL` / `FACEBOOK_RETRIEVAL` | `off` (template: `ytdlp`) | `ytdlp` downloads links with yt-dlp; only for content you may process |
 | `GOOGLE_SLIDES_ENABLED` | `true` | Google Slides output (needs the OAuth client file) |
 | `GOOGLE_OAUTH_CLIENT_FILE` | `data/google/client_secret.json` | Desktop-app OAuth client JSON |
