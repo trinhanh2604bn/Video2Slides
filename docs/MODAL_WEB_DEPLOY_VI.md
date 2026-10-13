@@ -40,6 +40,21 @@ Sau đó chạy lại lệnh deploy để container nhận giá trị mới.
 - Modal giới hạn mỗi request web **150 giây**: video tải lên trực tiếp phải upload xong trong thời gian đó
   (mạng chậm + video lớn sẽ lỗi). Video dài nên dùng nhập bằng link YouTube/Facebook.
 - YouTube có thể chặn tải từ IP của máy chủ cloud.
-- Google Slides: thêm URL `…/api/google/oauth/callback` của Modal vào Redirect URI trong Google Cloud Console
-  nếu bật tính năng này.
+- Google Slides: xem mục bên dưới.
+
+## Google Slides trên Modal
+
+Đăng nhập Google chỉ chạy được tại `http://127.0.0.1` (client OAuth loại "Desktop app"), nên bản Modal dùng
+lại kết nối đã đăng nhập trên máy: `client_secret.json` + `token.json` được chép vào Volume (thư mục
+`/google`). Mọi người dùng web app trên Modal đều xuất slide vào **Google Drive của tài khoản đó** (quyền
+`drive.file`: app chỉ thấy các file do chính nó tạo).
+
+Khi web app báo mất kết nối Google (token bị thu hồi, hoặc hết hạn sau 7 ngày nếu OAuth consent screen đang
+ở chế độ "Testing"): đăng nhập lại trên máy (`start.bat` → Kết nối Google), rồi chép lên lại:
+
+```bash
+export MSYS_NO_PATHCONV=1   # Git Bash: tránh đổi /google thành C:/Program Files/Git/google
+for f in client_secret.json token.json state.json; do .venv/Scripts/modal.exe volume put -f video2slides-web-data data/google/$f /google/$f; done
+.venv/Scripts/modal.exe deploy infrastructure/modal_web_app.py   # khởi động lại container để đọc file mới
+```
 - Job đang chạy sẽ bị đánh dấu lỗi nếu container khởi động lại (deploy lại giữa chừng): bấm "Thử lại".
