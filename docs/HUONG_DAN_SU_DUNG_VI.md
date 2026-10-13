@@ -5,9 +5,9 @@ và tệp PowerPoint nằm trong thư mục `data\` trên máy. Chỉ có hai d�
 
 | Bước | Chạy ở đâu | Ghi chú |
 |---|---|---|
-| Tách âm thanh, khung hình (FFmpeg) | Máy của bạn | |
-| Nhận dạng giọng nói (faster-whisper) | Máy của bạn (CPU) | Model tải một lần vào `.cache\models` |
-| Phân tích nội dung, viết dàn ý | Google Gemini (API) | Gửi **bản ghi lời nói** (văn bản), không gửi video |
+| Tách âm thanh, khung hình (FFmpeg) | Container CPU riêng trên Modal (hoặc máy của bạn với `MEDIA_PROCESSING=local`) | Video tải lên kho riêng, xóa sau khi xong |
+| Nhận dạng giọng nói (faster-whisper) | GPU L4 trên Modal (hoặc CPU máy của bạn) | Không cần cài Whisper trên máy |
+| Phân tích nội dung, viết slide và ghi chú | **Gemini** nếu có khóa; nếu không có khóa hoặc Gemini lỗi thì **Ollama `qwen3:4b` trên GPU Modal** | Tự động chuyển, không cần thao tác |
 | Ảnh minh họa AI (tùy chọn) | GPU worker riêng trên Modal | Chỉ gửi mô tả ảnh bằng tiếng Anh, không gửi bản ghi |
 | Dựng PowerPoint, ảnh xem trước | Máy của bạn | Xem trước dùng PowerPoint đã cài trên máy |
 
@@ -24,7 +24,10 @@ Yêu cầu: Windows 10/11, kết nối mạng lần đầu, khoảng 2 GB trốn
    * kiểm tra FFmpeg, hỏi để cài bằng `winget install Gyan.FFmpeg` nếu chưa có,
    * tạo `.env` từ `.env.example` nếu chưa có (không ghi đè `.env` đang dùng),
    * tải model nhận dạng giọng nói `base` (~150 MB, chỉ lần đầu).
-3. Mở `.env` bằng Notepad và điền `GEMINI_API_KEY` (mục 4).
+3. Mặc định **không cần** cài Ollama, FFmpeg hay tải model AI về máy: quản trị viên triển khai các worker trên
+   Modal theo [MODAL_CLOUD_SETUP_VI.md](MODAL_CLOUD_SETUP_VI.md) và điền `MODAL_LLM_WORKER_URL`,
+   `MODAL_MEDIA_WORKER_URL`, `MODAL_PROXY_TOKEN_*` vào `.env`. Chỉ khi chọn `LLM_PROVIDER=ollama` script mới
+   hỏi cài Ollama trên máy ([OLLAMA_SETUP_VI.md](OLLAMA_SETUP_VI.md)).
 
 Chạy lại `install.bat` bất cứ lúc nào cũng an toàn: không xóa dữ liệu, không tải lại model.
 
@@ -52,7 +55,7 @@ Chạy lại `install.bat` bất cứ lúc nào cũng an toàn: không xóa dữ
 6. Khi xong: **Mở trong Google Slides**, **Chế độ đọc**, **Tải PowerPoint (.pptx)**, xem bản ghi lời
    nói, hoặc **Tạo lại** từng ảnh minh họa AI chưa ưng ý.
 
-Nếu một bước lỗi (mạng, hết hạn mức Gemini, GPU…), bấm **Thử lại**: các bước đã xong (bản ghi lời
+Nếu một bước lỗi (Ollama chưa mở, thiếu RAM, mạng, GPU…), bấm **Thử lại**: các bước đã xong (bản ghi lời
 nói, dàn ý, ảnh đã tạo) được dùng lại, không chạy lại từ đầu.
 
 Tệp PowerPoint hoàn toàn chỉnh sửa được: tiêu đề, nội dung, sơ đồ (quy trình, dòng thời gian, thẻ,
@@ -83,23 +86,34 @@ tuổi, livestream hay DRM; những video đó sẽ báo lỗi kèm gợi ý t�
   Slides** ở màn hình kết quả (dùng lại ảnh AI có sẵn, không tốn GPU). Ứng dụng **không bao giờ ghi đè**
   một bài Google Slides đã có: khi bài được dựng lại (ví dụ tạo lại ảnh), bấm **Tạo bản Google Slides
   mới** nếu muốn.
-* **Chế độ đọc**: slide bên trái (~65%), phần giải thích bên phải (~35%): ý chính, giải thích chi tiết,
-  ví dụ, điều cần nhớ, thời điểm trong video gốc và trích lời giảng. Chuyển slide bằng nút ‹ ›, ảnh nhỏ,
-  phím ← → / Home / End, vuốt trên điện thoại; **F** = toàn màn hình. Phần giải thích đổi ngay theo slide.
-  Trên điện thoại, slide nằm trên, phần giải thích nằm dưới.
+* **Chế độ đọc**: slide hiển thị toàn khổ ở trên; phần giải thích nằm **bên dưới slide**: ý chính, giải
+  thích chi tiết, ví dụ, điều cần nhớ, thời điểm trong video gốc và trích lời giảng. Chuyển slide bằng nút
+  ‹ ›, ảnh nhỏ, phím ← → / Home / End, vuốt trên điện thoại; **F** = toàn màn hình. Phần giải thích đổi
+  ngay theo slide. Trên slide không có khung giải thích — nội dung dài nằm trong ghi chú.
 * **Kiểm tra đồng bộ** (trong Chế độ đọc): cho biết bạn đã xóa/thêm/đổi thứ tự slide hay sửa ghi chú trong
   Google Slides. Chế độ đọc vẫn hiển thị nội dung gốc do AI tạo; chỉnh sửa trong Google Slides không tự
   cập nhật ngược về ứng dụng.
 * **Bài đã tạo** (góc trên): mở lại các bài trước ở Chế độ đọc, Google Slides hoặc tải lại PowerPoint.
 
-## 4. Lấy khóa Gemini (bắt buộc để có dàn ý chất lượng)
+## 4. AI viết nội dung: mặc định chỉ Ollama trên Modal (`LLM_PROVIDER=modal_ollama`); `auto` = Gemini trước, Ollama dự phòng
 
-1. Mở <https://aistudio.google.com/apikey>, đăng nhập Google, bấm **Create API key**.
-2. Mở `.env`, điền: `GEMINI_API_KEY=khóa_của_bạn` (không dấu cách, không ngoặc kép).
-3. Tắt và mở lại `start.bat`. Góc phải trên đổi từ *AI: offline* sang *AI: Gemini*.
+* Có `GEMINI_API_KEY`: dùng Gemini trước. Khi Gemini không dùng được (khóa sai, hết hạn mức, quá tải, quá
+  thời gian, trả kết quả lỗi sau 2 lần sửa), ứng dụng **tự chuyển** sang Ollama `qwen3:4b` trên GPU của Modal
+  và hiện: *“Gemini không khả dụng, đang chuyển sang Ollama trên Modal.”*
+* Không có khóa: dùng ngay Ollama trên Modal. Lần đầu có thể thấy *“Đang khởi động mô hình trên GPU.”*
+* Nếu Gemini từ chối vì lý do an toàn, ứng dụng dừng và báo lỗi (không dùng mô hình khác để vượt qua).
+* Kết quả ghi rõ mô hình đã dùng và lý do chuyển. Google Slides không phụ thuộc vào khóa Gemini.
+* Chất lượng Qwen3 4B so với Gemini chưa được đánh giá; hãy xem lại nội dung trước khi trình bày.
 
-Mỗi video dùng 1 yêu cầu Gemini (tối đa thêm 2 lần sửa lỗi/thử lại). Không có khóa, ứng dụng vẫn
-chạy nhưng dàn ý chỉ là trích câu từ bản ghi (chế độ offline).
+### Tùy chọn: Ollama trên máy (`LLM_PROVIDER=ollama`)
+
+Model `qwen3:4b` chạy bằng Ollama ngay trên máy: dùng CPU/RAM (khoảng 3,7 GB RAM khi model đang nạp).
+Góc phải trên hiện *AI: qwen3:4b (Ollama, trên máy)*; nếu *chưa sẵn sàng*, rê chuột để xem lý do.
+
+* Ollama tự giải phóng RAM sau 5 phút không dùng (`OLLAMA_KEEP_ALIVE`).
+* Mỗi bài cần vài phút đến vài chục phút cho bước AI, tùy CPU và RAM trống (xem
+  [OLLAMA_TEST_REPORT_VI.md](OLLAMA_TEST_REPORT_VI.md)). Đóng bớt ứng dụng nặng sẽ nhanh hơn.
+* Chỉ dùng Gemini (không dự phòng): `LLM_PROVIDER=gemini`.
 
 ## 5. Ảnh minh họa AI (Modal GPU)
 
@@ -149,8 +163,13 @@ Không dán khóa/token vào chat, email hay tài liệu. `.env` đã nằm tron
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `GEMINI_API_KEY` | trống | Khóa Gemini (mục 4) |
-| `GEMINI_MODEL` | `gemini-flash-latest` | Model Gemini |
+| `LLM_PROVIDER` | `modal_ollama` | `modal_ollama` (chỉ Ollama trên Modal, mặc định), `auto` (Gemini trước, Ollama trên Modal dự phòng), `gemini`, `modal_ollama`, `ollama` (trên máy, chọn rõ ràng), `offline` |
+| `MEDIA_PROCESSING` | `auto` | `auto` (Modal khi có `MODAL_MEDIA_WORKER_URL`), `modal`, `local` |
+| `OLLAMA_MODEL` | `qwen3:4b` | Model Ollama (không tự nâng lên 8B/14B) |
+| `OLLAMA_NUM_CTX` | `8192` | Cửa sổ ngữ cảnh; tăng = tốn thêm RAM |
+| `OLLAMA_KEEP_ALIVE` | `5m` | Thời gian giữ model trong RAM sau lần dùng cuối |
+| `OLLAMA_REQUEST_TIMEOUT_SECONDS` | `600` | Thời gian chờ tối đa mỗi yêu cầu |
+| `GEMINI_API_KEY` | trống | Có khóa: Gemini được dùng trước; trống: dùng Ollama trên Modal |
 | `WHISPER_MODEL` | `base` | `tiny` nhanh hơn, `small` chính xác hơn (chậm ~2,5 lần) |
 | `DEFAULT_LANGUAGE` | `vi` | `vi`, `en`, `auto` |
 | `AUDIO_NORMALIZE` | `true` | Chuẩn hóa âm lượng trước khi nhận dạng |
@@ -173,9 +192,12 @@ Danh sách đầy đủ có chú thích: `.env.example`.
 | `start.bat` báo *Chưa cài đặt* | Chạy `install.bat` |
 | *Không tìm thấy FFmpeg* | `winget install Gyan.FFmpeg`, đóng và mở lại cửa sổ |
 | *Cổng 8000 đang bị chương trình khác dùng* | Thêm `APP_PORT=8010` vào `.env`, hoặc tắt chương trình đó |
-| Góc phải hiện *AI: offline* | Chưa có/sai `GEMINI_API_KEY` trong `.env`; sửa rồi mở lại `start.bat` |
-| *GEMINI_API_KEY không hợp lệ* | Tạo khóa mới ở AI Studio |
-| *Gemini tạm thời không khả dụng (HTTP 429)* | Hết hạn mức miễn phí; chờ rồi bấm **Thử lại** |
+| *Không kết nối được Ollama* | Mở ứng dụng Ollama (biểu tượng lạc đà ở khay hệ thống) rồi bấm **Thử lại** |
+| *Ollama chưa có model 'qwen3:4b'* | Chạy `ollama pull qwen3:4b` hoặc chạy lại `install.bat` |
+| *Không đủ RAM để chạy model* / bước AI rất chậm | Đóng bớt ứng dụng nặng (trình duyệt nhiều tab, Android Studio…), rồi **Thử lại** |
+| *Ollama không trả lời trong 600 giây* | Máy quá tải; đóng bớt ứng dụng, hoặc tăng `OLLAMA_REQUEST_TIMEOUT_SECONDS` |
+| *…chưa tạo được … hợp lệ sau 3 lần thử* | Bấm **Thử lại** (phần đã xong được giữ); hoặc giảm số slide |
+| *GEMINI_API_KEY không hợp lệ* (chỉ khi `LLM_PROVIDER=gemini`) | Tạo khóa mới ở AI Studio |
 | *Token truy cập GPU worker không hợp lệ* | Token Modal sai/đã xóa; xem mục 5, chạy `check_worker_auth.py` |
 | *Quá thời gian chờ GPU tạo ảnh* | Bấm **Thử lại** (ảnh đã xong được giữ), hoặc tắt ảnh minh họa AI |
 | *Đã đạt giới hạn… / hết ngân sách GPU* | Chờ sang ngày/tháng mới hoặc tăng giới hạn trong `.env` |
@@ -191,7 +213,8 @@ Nhật ký chi tiết hiện trong cửa sổ đen của `start.bat`. Khóa API 
 
 * Chỉ nhận MP4; mỗi lần xử lý một video (các video khác xếp hàng, tối đa 3).
 * Nhận dạng chạy trên CPU: video 10 phút với model `base` mất khoảng 2–4 phút.
-* Tên riêng, thuật ngữ và số đọc nhanh có thể bị nghe sai; Gemini chỉ sửa khi lỗi rõ ràng.
+* Tên riêng, thuật ngữ và số đọc nhanh có thể bị nghe sai; model AI chỉ sửa khi lỗi rõ ràng.
+* `qwen3:4b` là model nhỏ: JSON hợp lệ không có nghĩa nội dung luôn chính xác — hãy đọc lại slide trước khi dùng.
 * Ảnh AI không chứa chữ/số chính xác; số liệu, bảng và sơ đồ luôn là đối tượng PowerPoint chỉnh sửa được.
 * Ảnh xem trước cần PowerPoint (hoặc LibreOffice) trên máy.
 * Sổ theo dõi chi phí GPU nằm trên máy và là ước tính; luôn đặt thêm giới hạn chi tiêu trên Modal.

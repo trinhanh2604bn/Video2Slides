@@ -11,8 +11,13 @@ import pytest
 _TMP = Path(tempfile.mkdtemp(prefix="v2s-tests-"))
 os.environ["DATA_DIR"] = str(_TMP / "data")
 os.environ["AI_PROVIDER"] = "offline"
+os.environ["LLM_PROVIDER"] = "offline"
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["APP_PASSWORD"] = ""
+# Never reach the real Modal workers from tests (cloud tests use tests/fake_modal.py explicitly).
+os.environ["MEDIA_PROCESSING"] = "local"
+os.environ["MODAL_MEDIA_WORKER_URL"] = ""
+os.environ["MODAL_LLM_WORKER_URL"] = ""
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not installed")

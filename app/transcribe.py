@@ -118,6 +118,20 @@ def get_model(name: str | None = None):
         return _model
 
 
+def release_model() -> bool:
+    """Drop the cached Whisper model so its RAM is free for the local LLM (reloaded on next use)."""
+    global _model, _model_name
+    with _load_lock:
+        if _model is None:
+            return False
+        _model = None
+        _model_name = None
+    import gc
+
+    gc.collect()
+    return True
+
+
 def transcribe(audio_path: Path, language: str | None = None,
                progress: Callable[[float, float], None] | None = None) -> Transcript:
     """Transcribe a 16 kHz mono WAV file. ``language='auto'`` enables detection.

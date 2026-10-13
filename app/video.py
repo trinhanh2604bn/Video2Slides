@@ -135,6 +135,20 @@ def validate(path: Path) -> MediaInfo:
     return info
 
 
+def basic_validate(path: Path) -> None:
+    """Checks that need no FFmpeg (cloud processing): size and the MP4 'ftyp' signature.
+    Duration, streams and decodability are validated by ffprobe on the Modal media worker."""
+    size = path.stat().st_size
+    if size == 0:
+        raise MediaError("Tệp tải lên rỗng.")
+    if size > settings.max_upload_bytes:
+        raise MediaError(f"Tệp vượt quá {settings.max_upload_mb} MB.")
+    with path.open("rb") as fh:
+        head = fh.read(12)
+    if len(head) < 12 or head[4:8] != b"ftyp":
+        raise MediaError("Chỉ hỗ trợ định dạng MP4.")
+
+
 def extract_audio(video: Path, out_wav: Path) -> Path:
     """Extract mono 16 kHz PCM audio, the format Whisper expects.
 
@@ -188,7 +202,7 @@ def extract_frames(
     candidates = candidates or max_frames * 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    frames: list[Frame] = []
+    grabbed: list[tuple[Path, float]] = []
     # Skip the very first/last seconds, which are often black or title cards.
     margin = min(2.0, duration * 0.05)
     span = max(duration - 2 * margin, 0.1)
@@ -201,8 +215,16 @@ def extract_frames(
              "-q:v", "4", str(target)],
             timeout=60,
         )
-        if res.returncode != 0 or not target.exists():
-            continue
+        if res.returncode == 0 and target.exists():
+            grabbed.append((target, ts))
+    return select_frames(grabbed, out_dir, max_frames)
+
+
+def select_frames(grabbed: list[tuple[Path, float]], out_dir: Path, max_frames: int | None = None) -> list[Frame]:
+    """Keep the bright, non-flat, distinct candidate frames (also used for frames grabbed on Modal)."""
+    max_frames = max_frames or settings.max_frames
+    frames: list[Frame] = []
+    for target, ts in grabbed:
         with Image.open(target) as img:
             stat = ImageStat.Stat(img.convert("L"))
             frames.append(

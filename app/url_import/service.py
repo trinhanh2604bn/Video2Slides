@@ -22,7 +22,7 @@ import httpx
 
 from .. import jobs
 from ..config import settings
-from ..video import MediaError, validate
+from ..video import MediaError, basic_validate, ffmpeg_available, validate
 from . import metadata as md_mod
 from . import retrieval
 from .errors import UPLOAD_HINT, UrlImportError
@@ -252,22 +252,33 @@ def _run_download(job_id: str) -> None:
         fetch_media(source, d)
 
         target = d / INPUT_NAME
+        cloud_only = settings.media_on_modal and not all(ffmpeg_available().values())
         try:
-            info = validate(target)
+            # Without local FFmpeg (cloud processing) ffprobe runs on the Modal media worker instead.
+            from .. import media_local
+
+            if not cloud_only:
+                info = validate(target)
+            elif media_local.available():
+                info = media_local.validate(target, settings.url_max_duration_sec)
+            else:
+                info = None
+                basic_validate(target)
         except MediaError as exc:
             target.unlink(missing_ok=True)
             raise UrlImportError("download_failed", str(exc)) from None
-        if info.duration > settings.url_max_duration_sec:
+        if info is not None and info.duration > settings.url_max_duration_sec:
             target.unlink(missing_ok=True)
             retrieval.check_duration(info.duration)
 
         options = dict(job.get("options") or {})
-        if not options.get("slide_count"):
-            options["recommended_slides"] = recommend_slide_count(info.duration, int(info.duration * 2.3))
-        jobs.update(job_id, options=options, media={
-            "duration": round(info.duration, 2), "width": info.width, "height": info.height,
-            "video_codec": info.video_codec, "audio_codec": info.audio_codec, "size_bytes": info.size_bytes,
-        })
+        media = None
+        if info is not None:
+            if not options.get("slide_count"):
+                options["recommended_slides"] = recommend_slide_count(info.duration, int(info.duration * 2.3))
+            media = {"duration": round(info.duration, 2), "width": info.width, "height": info.height,
+                     "video_codec": info.video_codec, "audio_codec": info.audio_codec, "size_bytes": info.size_bytes}
+        jobs.update(job_id, options=options, media=media)
         jobs.enqueue(job_id)
     except UrlImportError as exc:
         _fail(job_id, f"{exc.message} {UPLOAD_HINT}")

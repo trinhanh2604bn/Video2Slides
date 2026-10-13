@@ -14,7 +14,9 @@ Safety properties:
 
 from __future__ import annotations
 
+import copy
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -113,9 +115,24 @@ class _QuietLogger:
         log.info("yt-dlp error: %s", str(msg)[:160])
 
 
+def _find_deno() -> str | None:
+    """deno on PATH, or the winget install folder (winget does not always add it to PATH)."""
+    found = shutil.which("deno")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return None
+    pkgs = Path(local) / "Microsoft" / "WinGet" / "Packages"
+    return next((str(p) for p in pkgs.glob("DenoLand.Deno_*/deno.exe")), None)
+
+
 def _base_opts(platform: str) -> dict[str, Any]:
     h = settings.url_max_height
+    deno = _find_deno()
     return {
+        # YouTube needs a JS runtime to solve its download-URL challenges; without one some formats are missing.
+        "js_runtimes": {"deno": {"path": deno} if deno else {}},
         "logger": _QuietLogger(),
         "quiet": True,
         "no_warnings": True,
@@ -137,7 +154,8 @@ def _base_opts(platform: str) -> dict[str, Any]:
         "format": (f"bv*[height<={h}][protocol=https]+ba[protocol=https]/"
                    f"b[height<={h}][protocol=https]/"
                    f"wv*[protocol=https]+ba[protocol=https]/w[protocol=https]"),
-        "format_sort": [f"res:{h}", "ext:mp4:m4a"],
+        # Original-language audio (not a dubbed track), H.264 video (widest decoder support), low resolution.
+        "format_sort": ["lang", "vcodec:h264", f"res:{h}", "ext:mp4:m4a"],
         "merge_output_format": "mp4",
         "restrictfilenames": True,
         "windowsfilenames": True,
@@ -199,8 +217,41 @@ def probe_ytdlp(parsed: ParsedUrl) -> dict[str, Any]:
     return info
 
 
+def _has_ffmpeg() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def _no_ffmpeg_formats(h: int) -> tuple[str, str]:
+    """(video, audio) selectors that need no merging: a progressive MP4 if one exists, else separate streams."""
+    video = (f"b[height<={h}][ext=mp4][protocol=https][acodec!=none]/"
+             f"bv*[height<={h}][ext=mp4][protocol=https]/bv*[ext=mp4][protocol=https]/"
+             f"b[ext=mp4][protocol=https]")
+    audio = "ba[ext=m4a][protocol=https]/ba[acodec^=mp4a][protocol=https]/ba[protocol=https]"
+    return video, audio
+
+
+def mux_streams(video: Path, audio: Path, out: Path) -> None:
+    """Copy one video and one audio stream into an MP4 with PyAV (no re-encoding, no FFmpeg binary)."""
+    import av
+
+    with av.open(str(video)) as vin, av.open(str(audio)) as ain, av.open(str(out), "w", format="mp4") as dst:
+        vsrc, asrc = vin.streams.video[0], ain.streams.audio[0]
+        vdst = dst.add_stream_from_template(vsrc)
+        adst = dst.add_stream_from_template(asrc)
+        for src_container, src, dst_stream in ((vin, vsrc, vdst), (ain, asrc, adst)):
+            for packet in src_container.demux(src):
+                if packet.dts is None:
+                    continue
+                packet.stream = dst_stream
+                dst.mux(packet)
+
+
 def download_ytdlp(parsed: ParsedUrl, dest: Path, work_dir: Path) -> dict[str, Any]:
-    """Download one low-resolution MP4 to ``dest``; ``work_dir`` is always removed."""
+    """Download one low-resolution MP4 to ``dest``; ``work_dir`` is always removed.
+
+    With FFmpeg on PATH yt-dlp merges/remuxes itself. Without it (cloud media processing), a progressive MP4
+    is used when offered; otherwise video-only and audio-only streams are downloaded and muxed with PyAV.
+    """
     deadline = time.monotonic() + settings.download_timeout_sec
     sizes: dict[str, int] = {}
 
@@ -221,10 +272,13 @@ def download_ytdlp(parsed: ParsedUrl, dest: Path, work_dir: Path) -> dict[str, A
     }
     work_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with ydl_cls(opts) as ydl:
-            info = ydl.extract_info(parsed.canonical_url, download=False)
-            _check_info(ydl.sanitize_info(info))
-            ydl.process_ie_result(info, download=True)
+        if _has_ffmpeg():
+            with ydl_cls(opts) as ydl:
+                info = ydl.extract_info(parsed.canonical_url, download=False)
+                _check_info(ydl.sanitize_info(info))
+                ydl.process_ie_result(info, download=True)
+        else:
+            info = _download_without_ffmpeg(ydl_cls, opts, parsed, work_dir)
         produced = sorted(work_dir.glob("media.mp4")) or sorted(work_dir.glob("media.*"))
         if not produced:
             raise UrlImportError("download_failed")
@@ -238,6 +292,36 @@ def download_ytdlp(parsed: ParsedUrl, dest: Path, work_dir: Path) -> dict[str, A
         raise map_error(exc, default="download_failed") from None
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _download_without_ffmpeg(ydl_cls, opts: dict[str, Any], parsed: ParsedUrl, work_dir: Path) -> dict[str, Any]:
+    video_fmt, audio_fmt = _no_ffmpeg_formats(settings.url_max_height)
+    base = opts | {"postprocessors": []}
+    with ydl_cls(base | {"format": video_fmt, "outtmpl": {"default": "video.%(ext)s"}}) as ydl:
+        raw = ydl.extract_info(parsed.canonical_url, download=False, process=False)
+        info = ydl.process_ie_result(copy.deepcopy(raw), download=False)
+        _check_info(ydl.sanitize_info(info))
+        ydl.process_ie_result(copy.deepcopy(raw), download=True)
+    video = next(iter(sorted(work_dir.glob("video.*"))), None)
+    if video is None:
+        raise UrlImportError("download_failed")
+    if (info.get("acodec") or "none") != "none":  # progressive file: already has sound
+        video.replace(work_dir / f"media{video.suffix}")
+        return info
+    with ydl_cls(base | {"format": audio_fmt, "outtmpl": {"default": "audio.%(ext)s"}}) as ydl:
+        ydl.process_ie_result(copy.deepcopy(raw), download=True)
+    audio = next(iter(sorted(work_dir.glob("audio.*"))), None)
+    if audio is None:
+        raise UrlImportError("download_failed")
+    try:
+        mux_streams(video, audio, work_dir / "media.mp4")
+    except Exception as exc:
+        log.info("PyAV mux failed: %s", str(exc)[:160])
+        raise UrlImportError("download_failed", "Không ghép được hình và tiếng của video.") from None
+    finally:
+        video.unlink(missing_ok=True)
+        audio.unlink(missing_ok=True)
+    return info
 
 
 def download_http(source_url: str, dest: Path, platform: str, client: httpx.Client) -> None:

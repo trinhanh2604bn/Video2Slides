@@ -94,3 +94,50 @@ def test_cancel_queued_job_is_skipped_by_worker():
     jobs.update(job_id, status="queued")
     assert jobs.request_cancel(job_id)["status"] == "cancelled"
     jobs.delete(job_id)
+
+
+@needs_ffmpeg
+def test_ollama_pipeline_unavailable_then_resumes_from_checkpoints(client, sample_mp4, monkeypatch):
+    """MOCK Ollama (tests/fake_ollama.py): stages, error code, retry without Whisper, LLM checkpoints."""
+    import httpx
+
+    from app.ai.ollama import OllamaProvider
+    from app.ai.ollama_client import OllamaClient
+    from tests.fake_ollama import FakeOllama
+
+    fake = FakeOllama()
+    state = {"up": False, "fail_second_batch": True, "batches": 0}
+
+    def handler(request):
+        if not state["up"]:
+            raise httpx.ConnectError("refused")
+        if request.url.path == "/api/chat" and "slide_id" in request.content.decode():
+            state["batches"] += 1
+            if state["fail_second_batch"] and state["batches"] == 2:
+                return httpx.Response(500, json={"error": "llama runner process has terminated"})
+        return fake.handle(request)
+
+    def provider():
+        return OllamaProvider(client=OllamaClient(base_url="http://ollama.test", transport=httpx.MockTransport(handler)))
+
+    monkeypatch.setattr(pipeline, "get_provider", provider)
+    job_id = _submit(client, sample_mp4)
+    job = _wait(client, job_id)
+    assert job["status"] == "failed" and job["error_code"] == "ollama_unavailable"
+    assert "Ollama" in job["error"]
+
+    monkeypatch.setattr(pipeline, "transcribe", lambda *a, **k: (_ for _ in ()).throw(AssertionError("re-ran")))
+    state["up"] = True
+    assert client.post(f"/api/jobs/{job_id}/retry").status_code == 202
+    job = _wait(client, job_id)
+    assert job["status"] == "failed" and job["error_code"] == "model_load_failed"
+    assert any((jobs.job_dir(job_id) / "llm_cache").iterdir())  # outline + first batch checkpointed
+
+    state["fail_second_batch"] = False
+    n = len(fake.chats)
+    assert client.post(f"/api/jobs/{job_id}/retry").status_code == 202
+    job = _wait(client, job_id)
+    assert job["status"] == "done", job["error"]
+    assert fake.steps()[n:] == ["slides"]  # only the failed batch was generated again
+    assert "writing_slides" in job["stage_times"] and job["result"]["provider"] == "ollama"
+    assert job["result"]["llm"]["model"] == "qwen3:4b" and job["result"]["llm"]["cache_hits"] >= 2

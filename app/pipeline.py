@@ -2,9 +2,9 @@
 video -> audio/frames -> transcript -> outline -> [illustration plan -> AI images] -> pptx
 -> [native Google Slides + speaker notes].
 
-Intermediate results (transcript, frames, outline, generated images) are cached in
-the job folder so a retry after e.g. a Gemini rate limit does not re-run Whisper,
-and a retry after a GPU failure does not regenerate images that already exist.
+Intermediate results (transcript, frames, LLM checkpoints, outline, generated images) are cached
+in the job folder so a retry after an LLM failure (Ollama stopped, timeout, invalid answer) does not
+re-run FFmpeg or Whisper, and a retry after a GPU failure does not regenerate existing images.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import config, jobs, library, preview
-from .ai import AIError, OutlineRequest, Presentation, get_provider
+from .ai import AIError, OutlineRequest, Presentation, get_provider, recommend_slide_count
+from .ai.grounding import sanitize as sanitize_grounding
 from .illustrations import (
     IllustrationOutcome, IllustrationService, ImageGenerationError, apply_illustrations, get_image_provider,
     plan_illustrations,
@@ -28,9 +29,14 @@ from .google_slides import auth as google_auth
 from .google_slides.export import export_presentation
 from .pptx_engine import FrameRef, build_pptx, validate_pptx
 from .reading import ensure_reading_notes
-from .transcribe import Transcript, TranscriptionError, transcribe
-from .video import MediaError, extract_audio, extract_frames
-from .sysinfo import peak_memory_mb
+from .media_remote import (
+    TRANSCRIBE_IMPL_VERSION, ModalMediaClient, RemoteMediaError, Waiter, file_sha256, save_frames,
+    transcript_key,
+)
+from .transcribe import Segment, Transcript, TranscriptionError, release_model, transcribe
+from . import media_local
+from .video import MediaError, extract_audio, extract_frames, select_frames
+from .sysinfo import peak_memory_mb, system_memory_mb
 
 log = logging.getLogger(__name__)
 
@@ -66,62 +72,58 @@ def run_job(job_id: str) -> None:
     duration = (job.get("media") or {}).get("duration", 0.0)
 
     try:
-        # 1-2. Audio + frames (skipped when cached from a previous attempt)
-        jobs.set_stage(job_id, "extracting_audio")
-        transcript_json = d / "transcript.json"
-        frames_meta = d / "frames.json"
-        if not transcript_json.exists() or not frames_meta.exists():
-            if not video.exists():
-                raise MediaError("Tệp video gốc đã bị xóa. Hãy tải video lên lại.")
-            frames = extract_frames(video, d / "frames", duration)
-            frames_meta.write_text(
-                json.dumps([{"file": f.path.name, "timestamp": f.timestamp} for f in frames]), encoding="utf-8"
-            )
-            if not transcript_json.exists():
-                audio = extract_audio(video, d / "audio.wav")
-                jobs.check_cancel(job_id)
-                # 3. Speech recognition
-                jobs.set_stage(job_id, "transcribing")
+        # 1-3. Audio, frames and transcript (cached per step; on Modal or on this computer)
+        transcript, frame_refs = _prepare_media(job_id, d, video, opts, duration)
 
-                def on_progress(done: float, total: float) -> None:
-                    jobs.check_cancel(job_id)
-                    jobs.update(job_id, progress={"stage": "transcribing", "done_sec": round(done, 1),
-                                                  "total_sec": round(total, 1)})
-
-                try:
-                    transcript = transcribe(audio, opts.get("language"), progress=on_progress)
-                finally:
-                    audio.unlink(missing_ok=True)
-                transcript.save(d)
-                jobs.update(job_id, progress=None)
-        transcript = Transcript.from_json(json.loads(transcript_json.read_text(encoding="utf-8")))
-        frame_refs = [
-            FrameRef(d / "frames" / f["file"], float(f["timestamp"]))
-            for f in json.loads(frames_meta.read_text(encoding="utf-8"))
-            if (d / "frames" / f["file"]).exists()
-        ]
-
-        # 4. AI outline (cached)
+        # 4. AI outline (cached; reused only when made by the same provider/model)
         jobs.check_cancel(job_id)
         jobs.set_stage(job_id, "analyzing")
         outline_file = d / "outline.json"
         provider = get_provider()
-        outline_cached = outline_file.exists()
+        outline_cached = _outline_reusable(d, provider)
+        llm_info = None
         if outline_cached:
             pres = Presentation.model_validate_json(outline_file.read_text(encoding="utf-8"))
+            llm_info = _read_json(d / "outline_meta.json").get("llm")
         else:
-            pres = provider.generate(OutlineRequest(
-                transcript=transcript,
-                language=opts.get("language") or "vi",
-                slide_count=opts.get("slide_count"),
-                title_hint=opts.get("title") or "",
-                style=opts.get("style") or "professional",
-                frame_timestamps=tuple(f.timestamp for f in frame_refs),
-                max_illustrations=image_cap(opts.get("slide_count") or opts.get("recommended_slides") or 10,
-                                            density, config.settings.image_max_per_presentation)
-                if want_images else 0,
-            ))
+            if provider.name == "ollama" and config.settings.release_whisper_before_llm and release_model():
+                log.info("Whisper model released before local LLM inference")
+            mem_before = system_memory_mb()
+            llm_started = time.time()
+            try:
+                pres = provider.generate(OutlineRequest(
+                    status=lambda message: _status(job_id, message),
+                    transcript=transcript,
+                    language=opts.get("language") or "vi",
+                    slide_count=opts.get("slide_count"),
+                    title_hint=opts.get("title") or "",
+                    style=opts.get("style") or "professional",
+                    frame_timestamps=tuple(f.timestamp for f in frame_refs),
+                    max_illustrations=image_cap(opts.get("slide_count") or opts.get("recommended_slides") or 10,
+                                                density, config.settings.image_max_per_presentation)
+                    if want_images else 0,
+                    cache_dir=d,
+                    progress=lambda step, done, total: _llm_progress(job_id, step, done, total),
+                    check_cancel=lambda: jobs.check_cancel(job_id),
+                ))
+            finally:
+                if hasattr(provider, "describe"):
+                    llm_info = {**provider.describe(), "wall_seconds": round(time.time() - llm_started, 1),
+                                "system_memory_before_mb": mem_before, "system_memory_after_mb": system_memory_mb()}
+                    jobs.update(job_id, llm=llm_info)
+            # Final grounding net for every provider: no invented boilerplate slides / contact details.
+            grounding_notices = sanitize_grounding(pres, transcript.text)
             outline_file.write_text(pres.model_dump_json(indent=2), encoding="utf-8")
+            used = getattr(provider, "used_provider", None) or provider.name
+            (d / "outline_meta.json").write_text(json.dumps(
+                {"provider": used, "route_mode": provider.name, "model": getattr(provider, "used_model", None),
+                 "grounding": grounding_notices,
+                 "prompt_version": (llm_info or {}).get("prompt_version"), "schema": "presentation-v1",
+                 "transcript_key": _read_json(d / "transcript_meta.json").get("key"),
+                 "created_at": time.time(), "llm": llm_info},
+                ensure_ascii=False, indent=2), encoding="utf-8")
+            _status(job_id, None)
+            jobs.update(job_id, progress=None)
         ensure_reading_notes(pres, transcript)
 
         # 5. AI illustrations (optional, feature-flagged)
@@ -148,7 +150,9 @@ def run_job(job_id: str) -> None:
 
         notices = []
         if not provider.is_llm:
-            notices.append("Chưa cấu hình GEMINI_API_KEY nên dàn ý được tạo bằng chế độ offline đơn giản.")
+            notices.append("LLM_PROVIDER=offline: dàn ý được tạo bằng chế độ offline đơn giản, không dùng mô hình AI.")
+        notices.extend(f"Ghi chú từ bước AI: {w}" for w in ((llm_info or {}).get("warnings") or [])[:3])
+        notices.extend((_read_json(d / "outline_meta.json").get("grounding") or [])[:5])
         if outcome is not None:
             notices.extend(_illustration_notices(outcome))
 
@@ -178,8 +182,12 @@ def run_job(job_id: str) -> None:
                 "title": pres.presentation_title,
                 "slide_count": report.slide_count,
                 "pictures": report.pictures,
-                "provider": provider.name,
-                "model": getattr(provider, "used_model", None) if not outline_cached else None,
+                "provider": (llm_info or {}).get("provider") or getattr(provider, "used_provider", None)
+                or provider.name,
+                "model": (llm_info or {}).get("model") or getattr(provider, "used_model", None),
+                "llm_route": _route_summary(llm_info),
+                "media_processing": jobs.load(job_id).get("media_processing"),
+                "llm": _llm_summary(llm_info),
                 "language": transcript.language,
                 "layouts": [s.layout_type for s in pres.slides],
                 "layout_mode": layout_mode,
@@ -198,11 +206,323 @@ def run_job(job_id: str) -> None:
             _cancelled(job_id)
         else:
             _fail(job_id, str(exc))
-    except (MediaError, TranscriptionError, AIError) as exc:
+    except AIError as exc:
+        _fail(job_id, str(exc), getattr(exc, "code", "ai_error"))
+    except (MediaError, TranscriptionError) as exc:
         _fail(job_id, str(exc))
+    except RemoteMediaError as exc:
+        hint = (" Đây là lỗi cấu hình GPU/CUDA của worker trên Modal; video gốc được giữ lại để thử lại sau khi "
+                "sửa." if exc.code == "cuda_unavailable" else "")
+        _fail(job_id, f"Xử lý video trên Modal thất bại: {exc}{hint}", exc.code)
     except Exception as exc:
         log.exception("job %s failed", job_id)
         _fail(job_id, f"Lỗi không mong muốn: {exc}")
+
+
+# ---------------------------------------------------------------------- media: audio, frames, transcript
+
+def _status(job_id: str, message: str | None) -> None:
+    """Short Vietnamese status line shown under the current stage (never secrets or raw API answers)."""
+    try:
+        jobs.update(job_id, status_message=message)
+    except jobs.JobNotFound:
+        pass
+
+
+def _transcript_settings(opts: dict, on_modal: bool) -> dict:
+    s = config.settings
+    common = {"language": opts.get("language") or s.default_language, "vad": True,
+              "audio_normalize": s.audio_normalize}
+    if on_modal:
+        model = s.modal_whisper_model_en if common["language"] == "en" else s.modal_whisper_model
+        return {"location": "modal", "model": model, "compute_type": s.modal_whisper_compute_type,
+                "beam_size": s.modal_whisper_beam_size, "batch_size": s.modal_whisper_batch_size,
+                "word_timestamps": s.modal_whisper_batch_size > 0, **common}
+    return {"location": "local", "model": s.whisper_model, "compute_type": s.whisper_compute_type,
+            "beam_size": s.whisper_beam_size, **common}
+
+
+def _transcript_current(d: Path, tset: dict) -> bool:
+    """transcript.json may be reused: made with the same source + settings (old jobs without meta: yes)."""
+    meta = _read_json(d / "transcript_meta.json")
+    if not meta:
+        return True
+    return meta.get("key") == transcript_key(meta.get("source_sha256") or "", **tset)
+
+
+def _prepare_media(job_id: str, d: Path, video: Path, opts: dict, duration: float) -> tuple[Transcript, list[FrameRef]]:
+    on_modal = config.settings.media_on_modal
+    tset = _transcript_settings(opts, on_modal)
+    transcript_json, frames_meta = d / "transcript.json", d / "frames.json"
+    have = transcript_json.exists() and frames_meta.exists()
+    if not have or (video.exists() and not _transcript_current(d, tset)):
+        if not video.exists():
+            raise MediaError("Tệp video gốc đã bị xóa. Hãy tải video lên lại.")
+        src = jobs.load(job_id).get("content_hash") or file_sha256(video)
+        key = transcript_key(src, **tset)
+        if on_modal:
+            _media_on_modal(job_id, d, video, opts, tset, src, key)
+        else:
+            _media_local(job_id, d, video, duration, tset, src, key)
+    transcript = Transcript.from_json(json.loads(transcript_json.read_text(encoding="utf-8")))
+    frame_refs = [
+        FrameRef(d / "frames" / f["file"], float(f["timestamp"]))
+        for f in json.loads(frames_meta.read_text(encoding="utf-8"))
+        if (d / "frames" / f["file"]).exists()
+    ]
+    return transcript, frame_refs
+
+
+def _write_frames_meta(d: Path, frames) -> None:
+    (d / "frames.json").write_text(
+        json.dumps([{"file": f.path.name, "timestamp": f.timestamp} for f in frames]), encoding="utf-8")
+
+
+def _write_transcript_meta(d: Path, key: str, src: str, tset: dict, extra: dict) -> None:
+    (d / "transcript_meta.json").write_text(json.dumps(
+        {"key": key, "source_sha256": src, **tset, "impl": TRANSCRIBE_IMPL_VERSION, "created_at": time.time(),
+         **extra}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _media_local(job_id: str, d: Path, video: Path, duration: float, tset: dict, src: str, key: str) -> None:
+    """FFmpeg + faster-whisper on this computer (CPU)."""
+    jobs.set_stage(job_id, "extracting_audio")
+    t0 = time.time()
+    frames = extract_frames(video, d / "frames", duration)
+    _write_frames_meta(d, frames)
+    audio = extract_audio(video, d / "audio.wav")
+    audio_sec = round(time.time() - t0, 2)
+    jobs.check_cancel(job_id)
+    jobs.set_stage(job_id, "transcribing")
+
+    def on_progress(done: float, total: float) -> None:
+        jobs.check_cancel(job_id)
+        jobs.update(job_id, progress={"stage": "transcribing", "done_sec": round(done, 1),
+                                      "total_sec": round(total, 1)})
+
+    t1 = time.time()
+    try:
+        transcript = transcribe(audio, tset["language"], progress=on_progress)
+    finally:
+        audio.unlink(missing_ok=True)
+    transcript.save(d)
+    info = {"location": "local", "ffmpeg": {"location": "local-cpu"},
+            "whisper": {"device": "cpu", "model": tset["model"], "compute_type": tset["compute_type"]},
+            "timings": {"audio_and_frames_sec": audio_sec, "transcribe_sec": round(time.time() - t1, 2)}}
+    _write_transcript_meta(d, key, src, tset, {"processing": info})
+    jobs.update(job_id, progress=None, media_processing=info)
+
+
+def _media_on_modal(job_id: str, d: Path, video: Path, opts: dict, tset: dict, src: str, key: str) -> None:
+    """Upload -> FFmpeg on a Modal CPU container -> faster-whisper on a Modal GPU; checkpoint after each step."""
+    s = config.settings
+    ck_file = d / "remote_media.json"
+    ck = _read_json(ck_file)
+    if ck.get("source_sha256") != src:
+        ck = {"source_sha256": src, "timings": {}}
+
+    def save() -> None:
+        ck_file.write_text(json.dumps(ck, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    client = ModalMediaClient()
+    waiter = Waiter(check_cancel=lambda: jobs.check_cancel(job_id))
+    info: dict = {"location": "modal"}
+    jobs.set_stage(job_id, "extracting_audio")
+    # Audio-only upload: the audio track is copied locally with PyAV (no re-encoding, no FFmpeg install) and
+    # frames are grabbed locally, so a long video is not uploaded whole. Otherwise the MP4 is sent.
+    audio_only = s.modal_upload_audio_only and media_local.available()
+    upload_file = video
+    if audio_only and not ck.get("upload"):
+        _status(job_id, "Đang tách âm thanh và khung hình trên máy (không mã hóa lại).")
+        t0 = time.time()
+        upload_file = media_local.remux_audio(video, d / "audio_upload.m4a")
+        duration_local = media_local.probe(video).duration
+        frames = select_frames(media_local.grab_frames(video, d / "frames", duration_local), d / "frames")
+        _write_frames_meta(d, frames)
+        ck["timings"]["local_audio_and_frames_sec"] = round(time.time() - t0, 2)
+        ck["upload_bytes_saved"] = video.stat().st_size - upload_file.stat().st_size
+    try:
+        for attempt in range(2):  # an upload lost on the worker (expired/corrupt) is redone once
+            try:
+                if not ck.get("upload"):
+                    _status(job_id, "Đang tải âm thanh lên Modal." if upload_file != video else "Đang tải video lên Modal.")
+                    waiter.on_tick = lambda frac: jobs.update(job_id, progress={
+                        "stage": "extracting_audio", "done": round(frac * 100), "total": 100})
+                    up_sha = src if upload_file == video else file_sha256(upload_file)
+                    ck["upload"] = client.upload(upload_file, up_sha, waiter)
+                    ck["upload"]["audio_only"] = upload_file != video
+                    ck["timings"]["upload_sec"] = ck["upload"]["upload_sec"]
+                    save()
+                if not ck.get("preprocessed"):
+                    _status(job_id, "Đang tách âm thanh và khung hình bằng FFmpeg trên Modal (CPU).")
+                    waiter.on_tick = None
+                    t0 = time.time()
+                    sent_audio_only = bool(ck["upload"].get("audio_only"))
+                    params = {"max_duration_sec": s.max_duration_sec, "audio_normalize": tset["audio_normalize"],
+                              "frame_candidates": 0 if sent_audio_only else s.max_frames * 2,
+                              "frame_width": s.frame_width, "audio_only": sent_audio_only}
+                    res = client.preprocess(ck["upload"], params, waiter)
+                    if not sent_audio_only:
+                        frames = save_frames(res, d / "frames")
+                        _write_frames_meta(d, frames)
+                    media = res.get("media") or {}
+                    job = jobs.load(job_id)
+                    options = job.get("options") or {}
+                    if not options.get("slide_count") and not options.get("recommended_slides"):
+                        options["recommended_slides"] = recommend_slide_count(media.get("duration", 0),
+                                                                              int(media.get("duration", 0) * 2.3))
+                    keys = ("duration", "audio_codec") if sent_audio_only else (
+                        "duration", "width", "height", "video_codec", "audio_codec", "size_bytes")
+                    jobs.update(job_id, options=options, media={**(job.get("media") or {}), **{
+                        k: (round(v, 2) if k == "duration" else v) for k, v in media.items() if k in keys}})
+                    ck["preprocessed"] = True
+                    ck["media"] = media
+                    ck["timings"].update(preprocess_round_trip_sec=round(time.time() - t0, 2),
+                                         **{f"preprocess_{k}": v for k, v in (res.get("timings") or {}).items()})
+                    ck["ffmpeg"] = res.get("ffmpeg")
+                    save()
+                break
+            except RemoteMediaError as exc:
+                if attempt or exc.code not in ("upload_incomplete", "upload_corrupt", "expired", "audio_missing"):
+                    raise
+                ck = {"source_sha256": src, "timings": {}}
+
+        jobs.check_cancel(job_id)
+        jobs.set_stage(job_id, "transcribing")
+        _status(job_id, "Đang chờ Modal cấp GPU cho Whisper (có thể mất vài phút khi Modal đang bận).")
+        waiter.on_started = lambda: _status(job_id, "Đang nhận dạng giọng nói bằng Whisper trên GPU (Modal).")
+        info["llm_prewarm"] = _prewarm_llm(d)
+        total = float((ck.get("media") or {}).get("duration") or 0)
+        waiter.on_tick = lambda frac: jobs.update(job_id, progress={
+            "stage": "transcribing", "done_sec": round(frac * total, 1), "total_sec": round(total, 1)})
+        t0 = time.time()
+        params = {"model": tset["model"], "compute_type": tset["compute_type"], "beam_size": tset["beam_size"],
+                  "vad": tset["vad"], "language": None if tset["language"] == "auto" else tset["language"],
+                  "batch_size": tset["batch_size"], "word_timestamps": tset["word_timestamps"],
+                  "timestamps": not tset["word_timestamps"]}
+        for attempt in range(2):
+            try:
+                res = client.transcribe(ck["upload"]["upload_id"], params, waiter)
+                break
+            except RemoteMediaError as exc:
+                if attempt or not exc.retryable:
+                    raise
+        metrics = res.get("metrics") or {}
+        if metrics.get("device") != "cuda":
+            raise RemoteMediaError("Whisper trên Modal không chạy bằng CUDA; kết quả bị từ chối.", "cuda_unavailable")
+        transcript = _checked_transcript(res, total)
+        transcript.save(d)
+        ck["timings"]["transcribe_round_trip_sec"] = round(time.time() - t0, 2)
+        info.update(ffmpeg=ck.get("ffmpeg"), whisper=metrics, timings=ck["timings"],
+                    language_probability=res.get("language_probability"))
+        _write_transcript_meta(d, key, src, tset, {"processing": info})
+        client.delete(ck["upload"]["upload_id"])
+        ck_file.unlink(missing_ok=True)
+        (d / "audio_upload.m4a").unlink(missing_ok=True)
+        jobs.update(job_id, progress=None, media_processing=info)
+        _status(job_id, None)
+    except BaseException:
+        # Cancellation or failure: remove the temporary files on Modal; the local video stays for 'Thử lại'.
+        if ck.get("upload"):
+            client.delete(ck["upload"]["upload_id"])
+        ck_file.unlink(missing_ok=True)
+        (d / "audio_upload.m4a").unlink(missing_ok=True)
+        raise
+
+
+def _prewarm_llm(d: Path) -> bool:
+    """Start the Modal LLM GPU container while Whisper runs, only when this job will certainly use it
+    (LLM_PROVIDER=modal_ollama, or auto with no Gemini key / pinned job / open circuit). Measured cold start
+    ~100 s (Ollama GPU runner start + first generation), which then overlaps with transcription."""
+    s = config.settings
+    if not s.modal_llm_worker_url or (d / "outline.json").exists():
+        return False
+    try:
+        from .ai import active_provider_name
+        from .ai.modal_ollama import ModalOllamaClient
+        from .ai.router import RoutingProvider
+
+        name = active_provider_name()
+        if name == "modal_ollama" or (name == "auto" and RoutingProvider().will_use_modal(d)):
+            threading.Thread(target=lambda: ModalOllamaClient().warmup(), name="llm-prewarm", daemon=True).start()
+            return True
+    except Exception:
+        log.exception("LLM pre-warm skipped")
+    return False
+
+
+def _checked_transcript(res: dict, duration: float) -> Transcript:
+    """Segments ordered and inside the video; empty speech is an explicit error."""
+    limit = (duration or float(res.get("duration") or 0)) + 1.0
+    segs = []
+    for s in sorted(res.get("segments") or [], key=lambda x: float(x.get("start", 0))):
+        start, end = float(s.get("start", -1)), float(s.get("end", -1))
+        text = str(s.get("text") or "").strip()
+        if text and 0 <= start <= end <= limit:
+            segs.append(Segment(round(start, 2), round(end, 2), text))
+    if not segs:
+        raise TranscriptionError("Không phát hiện được lời nói trong video.")
+    return Transcript(segments=segs, language=str(res.get("language") or ""),
+                      duration=float(res.get("duration") or duration))
+
+
+def _route_summary(info: dict | None) -> dict | None:
+    route = (info or {}).get("route")
+    if not route:
+        return None
+    out = {k: route.get(k) for k in ("attempted", "successful_provider", "model", "fallback_reason",
+                                     "fallback_reason_text", "timings", "warnings", "providers_used")}
+    gem = (info or {}).get("gemini_attempts") or (info if route.get("successful_provider") == "gemini" else {})
+    if gem:
+        out["gemini_requests"] = gem.get("requests")
+        out["gemini_repairs"] = gem.get("repairs")
+    if (info or {}).get("modal"):
+        out["modal"] = info["modal"]
+    return out
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _outline_reusable(d: Path, provider) -> bool:
+    """A cached outline is reused on retry unless it was made by a different provider/model.
+    Outlines from before outline_meta.json existed are always reused (compatibility)."""
+    if not (d / "outline.json").exists():
+        return False
+    meta = _read_json(d / "outline_meta.json")
+    if not meta:
+        return True
+    tkey = _read_json(d / "transcript_meta.json").get("key")
+    if meta.get("transcript_key") and tkey and meta["transcript_key"] != tkey:
+        return False  # the transcript was redone: the outline was written from another input
+    if provider.name == "auto":
+        # Validated output of either routed provider is kept (with its provenance in outline_meta.json).
+        return meta.get("provider") in ("gemini", "modal_ollama")
+    if meta.get("provider") != provider.name:
+        return False
+    # Gemini may legitimately answer with a fallback model; for Ollama the model is part of the cache key.
+    return provider.name != "ollama" or meta.get("model") == getattr(provider, "used_model", None)
+
+
+def _llm_progress(job_id: str, step: str, done: int, total: int) -> None:
+    """Real counts reported by the provider (parts analysed, slides written); never an estimate."""
+    job = jobs.load(job_id)
+    if job.get("stage") != step:
+        jobs.set_stage(job_id, step)
+    jobs.update(job_id, progress={"stage": step, "done": done, "total": total})
+
+
+def _llm_summary(info: dict | None) -> dict | None:
+    if not info:
+        return None
+    keys = ("provider", "model", "ollama_version", "num_ctx", "think", "requests", "cache_hits", "repairs",
+            "splits", "prompt_tokens", "output_tokens", "llm_seconds", "wall_seconds", "cold_start_load_sec",
+            "avg_tokens_per_sec", "transcript_parts", "system_memory_before_mb", "system_memory_after_mb")
+    return {k: info.get(k) for k in keys if k in info}
 
 
 def _illustrate(job_id: str, d: Path, pres: Presentation, opts: dict, density: str) -> IllustrationOutcome:
@@ -363,8 +683,8 @@ def _cancelled(job_id: str) -> None:
         pass
 
 
-def _fail(job_id: str, message: str) -> None:
+def _fail(job_id: str, message: str, code: str | None = None) -> None:
     try:
-        jobs.update(job_id, status="failed", finished_at=time.time(), error=message)
+        jobs.update(job_id, status="failed", finished_at=time.time(), error=message, error_code=code, progress=None)
     except jobs.JobNotFound:
         pass
