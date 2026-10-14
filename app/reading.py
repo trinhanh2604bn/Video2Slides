@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 
 from .ai.schema import Presentation, Slide, TimeRange
+from .citations import Matcher, point_sources
 from .transcribe import Transcript
 
 LABELS = {
@@ -116,16 +117,21 @@ def _span_labels(slide: Slide) -> list[str]:
     return [fmt_clock(x) for x in sorted(set(slide.source_timestamps))[:6]]
 
 
-def slide_payload(slide: Slide, transcript: Transcript | None) -> dict:
-    """JSON for one slide in Reading Mode."""
+def slide_payload(slide: Slide, transcript: Transcript | None, matcher: Matcher | None = None) -> dict:
+    """JSON for one slide in Reading Mode (``matcher``: reuse one transcript index for a whole deck)."""
     rn = slide.reading_notes
     ranges = slide_ranges(slide)
+    points = _main_points(slide)
+    if matcher is None:
+        matcher = Matcher(transcript)
     return {
         "slide_id": slide.slide_id,
         "slide_number": slide.slide_number,
         "title": slide.title,
         "layout_type": slide.layout_type,
-        "main_points": _main_points(slide),
+        "main_points": points,
+        # Per-point citations by word matching (no LLM); start is None when no passage matches well.
+        "point_sources": point_sources(points, [(r.start, r.end) for r in ranges], matcher),
         "brief_explanation": slide.brief_explanation,
         "reading_notes": {
             "summary": rn.summary,

@@ -23,6 +23,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 PS_SCRIPT = Path(__file__).with_name("preview_powerpoint.ps1")
+PDF_NAME = "presentation.pdf"
 PREVIEW_WIDTH = 1280
 TIMEOUT_SEC = 240
 _lock = threading.Lock()
@@ -111,30 +112,87 @@ def render_previews(job_dir: Path, pptx: Path) -> list[Path]:
         return sorted(out.glob("slide-*.png"))
 
 
-def _render_powerpoint(pptx: Path, out: Path) -> None:
+def pdf_path(job_dir: Path) -> Path:
+    return job_dir / PDF_NAME
+
+
+def render_pdf(job_dir: Path, pptx: Path) -> Path:
+    """Vector PDF of the deck, one page per slide at the slide's own size (16:9). Text stays real text and
+    fonts are embedded, so the file imports into Figma (or Illustrator) as editable frames. Rendered on demand
+    and cached until the deck changes. Raises PreviewError."""
+    eng = engine()
+    if not eng:
+        raise PreviewError("Không có PowerPoint hoặc LibreOffice để xuất PDF.")
+    pdf = pdf_path(job_dir)
+    with _lock:
+        if pdf.is_file() and pdf.stat().st_mtime >= pptx.stat().st_mtime:
+            return pdf
+        tmp = Path(tempfile.mkdtemp(prefix="pdf-", dir=job_dir))
+        try:
+            if eng == "powerpoint":
+                out = tmp / PDF_NAME
+                _run_powerpoint(["-Pptx", str(pptx.resolve()), "-PdfOut", str(out.resolve())],
+                                "PowerPoint không xuất được PDF.")
+            else:
+                out = _libreoffice_pdf(pptx.resolve(), tmp, quality=True)
+            if not out.is_file() or out.stat().st_size == 0:
+                raise PreviewError("Trình kết xuất không tạo ra tệp PDF.")
+            out.replace(pdf)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return pdf
+
+
+def _run_powerpoint(script_args: list[str], failure: str) -> None:
     args = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(PS_SCRIPT),
-            "-Pptx", str(pptx), "-OutDir", str(out.resolve()), "-Width", str(PREVIEW_WIDTH)]
+            *script_args]
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT_SEC,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired as exc:
-        raise PreviewError("PowerPoint không phản hồi khi tạo ảnh xem trước.") from exc
+        raise PreviewError("PowerPoint không phản hồi.") from exc
     if proc.returncode != 0:
-        log.warning("PowerPoint preview failed: %s", (proc.stderr or proc.stdout)[-800:])
-        raise PreviewError("PowerPoint không mở được tệp để tạo ảnh xem trước.")
+        log.warning("PowerPoint automation failed: %s", (proc.stderr or proc.stdout)[-800:])
+        raise PreviewError(failure)
+
+
+def _render_powerpoint(pptx: Path, out: Path) -> None:
+    _run_powerpoint(["-Pptx", str(pptx), "-OutDir", str(out.resolve()), "-Width", str(PREVIEW_WIDTH)],
+                    "PowerPoint không mở được tệp để tạo ảnh xem trước.")
+
+
+# Keep photos at full resolution and skip notes pages: the PDF is meant for design tools, not for screens.
+_LO_QUALITY_FILTER = ('pdf:impress_pdf_Export:{"ReduceImageResolution":{"type":"boolean","value":"false"},'
+                      '"Quality":{"type":"long","value":"95"},"ExportNotesPages":{"type":"boolean","value":"false"}}')
+
+
+def _libreoffice_pdf(pptx: Path, out: Path, quality: bool = False) -> Path:
+    """Convert with headless LibreOffice into ``out`` and return the PDF path. Raises PreviewError."""
+    profile = out / "lo-profile"
+    pdf = out / f"{pptx.stem}.pdf"
+    # Filter options in JSON need LibreOffice 7.4+; older builds fall back to the default export.
+    filters = [_LO_QUALITY_FILTER, "pdf"] if quality else ["pdf"]
+    try:
+        for flt in filters:
+            args = [_soffice() or "soffice", f"-env:UserInstallation={profile.resolve().as_uri()}", "--headless",
+                    "--convert-to", flt, "--outdir", str(out), str(pptx)]
+            try:
+                subprocess.run(args, capture_output=True, timeout=TIMEOUT_SEC, check=True)
+            except subprocess.CalledProcessError:
+                continue
+            if pdf.is_file():
+                return pdf
+    except subprocess.TimeoutExpired as exc:
+        raise PreviewError("LibreOffice không phản hồi.") from exc
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+    raise PreviewError("LibreOffice không chuyển được tệp sang PDF.")
 
 
 def _render_libreoffice(pptx: Path, out: Path) -> None:
     import pypdfium2 as pdfium
 
-    profile = out / "lo-profile"
-    args = [_soffice() or "soffice", f"-env:UserInstallation={profile.resolve().as_uri()}", "--headless",
-            "--convert-to", "pdf", "--outdir", str(out), str(pptx)]
-    try:
-        subprocess.run(args, capture_output=True, timeout=TIMEOUT_SEC, check=True)
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
-        raise PreviewError("LibreOffice không chuyển được tệp để tạo ảnh xem trước.") from exc
-    pdf = out / f"{pptx.stem}.pdf"
+    pdf = _libreoffice_pdf(pptx, out)
     doc = pdfium.PdfDocument(str(pdf))
     try:
         for i, page in enumerate(doc, start=1):
@@ -143,4 +201,3 @@ def _render_libreoffice(pptx: Path, out: Path) -> None:
     finally:
         doc.close()
     pdf.unlink(missing_ok=True)
-    shutil.rmtree(profile, ignore_errors=True)

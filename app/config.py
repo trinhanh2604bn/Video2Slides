@@ -63,8 +63,11 @@ class Settings:
         default_factory=lambda: Path(os.environ.get("MODEL_CACHE_DIR", BASE_DIR / ".cache" / "models"))
     )
     job_ttl_hours: float = field(default_factory=lambda: _float("JOB_TTL_HOURS", 24))
-    # true = finished presentations stay in the library (Reading Mode, re-download); videos are always deleted
+    # true = finished presentations stay in the library (Reading Mode, re-download)
     keep_finished_presentations: bool = field(default_factory=lambda: _bool("KEEP_FINISHED_PRESENTATIONS", True))
+    # Hours an uploaded/downloaded source video is kept after the deck is done, so Reading Mode timestamps can
+    # play it in the app (the file is renamed, not copied; the periodic cleanup deletes it). 0 = delete at once.
+    keep_source_video_hours: float = field(default_factory=lambda: max(0.0, _float("KEEP_SOURCE_VIDEO_HOURS", 24)))
 
     # Upload / media limits
     # The video file only stays on this computer; with cloud processing only its audio track is uploaded.

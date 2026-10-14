@@ -46,6 +46,15 @@
         "set LLM_PROVIDER=modal_ollama&& set PYTHONIOENCODING=utf-8&& .venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8030"
       ],
       "port": 8030
+    },
+    {
+      "name": "video2slides-isolated-8040",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set DATA_DIR=C:\\Users\\TRINHT~1\\AppData\\Local\\Temp\\claude\\D--Notebook1\\72b49d9f-2772-4fcd-af8d-2d167b5fcc12\\scratchpad\\preview-data&& set LLM_PROVIDER=offline&& set APP_PASSWORD=&& set PYTHONIOENCODING=utf-8&& .venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8040"
+      ],
+      "port": 8040
     }
   ]
 }

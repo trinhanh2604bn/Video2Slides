@@ -320,7 +320,10 @@
         <div class="row result-actions">
           <a class="btn primary lg btn-ext" id="openGoogleBtn" target="_blank" rel="noopener noreferrer" hidden>Mở trong Google Slides</a>
           <button class="btn lg" id="readBtn" type="button">Chế độ đọc</button>
+          <button class="btn ghost" id="studioBtn" type="button" title="Sơ đồ tư duy, dòng thời gian, tóm tắt, hỏi đáp, trắc nghiệm, thẻ ghi nhớ">Studio học tập</button>
           <button class="btn ghost" id="downloadBtn" type="button">Tải PowerPoint (.pptx)</button>
+          <button class="btn ghost" id="downloadFigmaBtn" type="button" title="Tệp .zip gồm mỗi slide một tệp SVG. Giải nén rồi kéo thả các tệp SVG vào Figma: mỗi slide thành một frame, chữ và hình vẫn sửa được.">Tải cho Figma (SVG)</button>
+          <button class="btn ghost" id="downloadPdfBtn" type="button" title="Mỗi slide là một trang PDF dạng vector.">Tải PDF</button>
           <button class="btn ghost" id="transcriptBtn" type="button">Xem bản ghi lời nói</button>
           <button class="btn ghost" id="newBtn" type="button">Tạo bài mới</button>
         </div>
@@ -331,7 +334,10 @@
             <p class="step-label">Xem trước</p>
             <h3>Xem trước bài trình chiếu</h3>
           </div>
-          <span class="muted small counter" id="previewCounter"></span>
+          <div class="row">
+            <button class="btn ghost small" id="copyFigmaBtn" type="button" title="Sao chép slide đang xem dạng SVG, rồi bấm Ctrl+V trong Figma để dán thành layer sửa được." hidden>Sao chép slide cho Figma</button>
+            <span class="muted small counter" id="previewCounter"></span>
+          </div>
         </div>
         <p class="muted small" id="previewNote" hidden></p>
         <div class="preview-stage" id="previewStage" hidden>
@@ -363,12 +369,21 @@
           <span class="muted small" id="readerCounter" aria-live="polite"></span>
         </div>
         <div class="row reader-tools">
+          <button type="button" class="btn ghost" id="readerStudio" title="Sơ đồ tư duy, tóm tắt, hỏi đáp, trắc nghiệm…">Studio</button>
           <a class="btn ghost" id="readerGoogle" target="_blank" rel="noopener noreferrer" hidden>Mở Google Slides</a>
           <button type="button" class="btn ghost" id="readerCheck" hidden>Kiểm tra đồng bộ</button>
           <button type="button" class="btn ghost" id="readerFull" title="Toàn màn hình (F)">Toàn màn hình</button>
         </div>
       </div>
       <div class="notice" id="readerNotice" role="status" hidden></div>
+      <div class="edit-bar" id="editBar" role="status" aria-live="polite" hidden>
+        <span class="edit-bar-text" id="editBarText"></span>
+        <div class="row">
+          <button type="button" class="btn primary" id="editApply" hidden>Áp dụng</button>
+          <button type="button" class="btn ghost" id="editClear" hidden>Xóa danh sách</button>
+          <button type="button" class="btn ghost" id="editUndo" hidden>Hoàn tác lần sửa gần nhất</button>
+        </div>
+      </div>
       <div class="reader">
         <div class="reader-left">
           <div class="reader-stage" id="readerStage">
@@ -378,6 +393,10 @@
             <button class="nav next" id="readerNext" type="button" aria-label="Slide sau">&#8250;</button>
           </div>
           <div class="reader-progress" aria-hidden="true"><span id="readerProgress"></span></div>
+          <div class="reader-video" id="readerVideo" hidden>
+            <video id="readerPlayer" controls preload="metadata" playsinline></video>
+            <button type="button" class="btn ghost small" id="readerVideoClose">Đóng video</button>
+          </div>
           <div class="preview-strip reader-strip" id="readerStrip" role="list" aria-label="Danh sách slide"></div>
           <p class="reader-keys muted small" aria-hidden="true">
             <span><kbd>←</kbd><kbd>→</kbd> chuyển slide</span>
@@ -386,6 +405,24 @@
           </p>
         </div>
         <article class="reader-notes" id="readerNotes" tabindex="0" aria-live="polite"></article>
+      </div>
+    </section>
+
+    <!-- Studio: study material made from a finished deck -->
+    <section id="studioView" hidden>
+      <div class="card studio">
+        <div class="preview-head">
+          <div>
+            <p class="step-label">Studio học tập</p>
+            <h2 id="studioTitle"></h2>
+          </div>
+          <div class="row">
+            <button type="button" class="btn ghost" id="studioRead">Chế độ đọc</button>
+            <button type="button" class="btn ghost" id="studioBack">&#8592; Quay lại</button>
+          </div>
+        </div>
+        <div class="studio-tabs" id="studioTabs" role="tablist" aria-label="Loại nội dung"></div>
+        <div class="studio-body" id="studioBody" role="tabpanel" tabindex="0" aria-live="polite"></div>
       </div>
     </section>
 

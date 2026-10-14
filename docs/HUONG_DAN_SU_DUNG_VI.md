@@ -52,7 +52,7 @@ Chạy lại `install.bat` bất cứ lúc nào cũng an toàn: không xóa dữ
 4. Bật/tắt **Google Slides** (cần kết nối Google một lần — xem mục 3b) và **Ảnh minh họa AI**.
 5. Bấm **Tạo bài trình chiếu** và theo dõi từng bước. Thanh tiến độ chỉ hiện số đo thật
    (số giây âm thanh đã nhận dạng, số ảnh đã tạo xong). Có thể bấm **Hủy xử lý** bất cứ lúc nào.
-6. Khi xong: **Mở trong Google Slides**, **Chế độ đọc**, **Tải PowerPoint (.pptx)**, xem bản ghi lời
+6. Khi xong: **Mở trong Google Slides**, **Chế độ đọc**, **Tải PowerPoint (.pptx)**, **Tải cho Figma (SVG)**, **Tải PDF**, xem bản ghi lời
    nói, hoặc **Tạo lại** từng ảnh minh họa AI chưa ưng ý.
 
 Nếu một bước lỗi (Ollama chưa mở, thiếu RAM, mạng, GPU…), bấm **Thử lại**: các bước đã xong (bản ghi lời
@@ -61,6 +61,15 @@ nói, dàn ý, ảnh đã tạo) được dùng lại, không chạy lại từ 
 Tệp PowerPoint hoàn toàn chỉnh sửa được: tiêu đề, nội dung, sơ đồ (quy trình, dòng thời gian, thẻ,
 so sánh…) là đối tượng PowerPoint thật; ghi chú cho người trình bày nằm trong phần *Notes*; màu và
 font của phong cách được lưu vào slide master, nên slide bạn tự thêm cũng cùng phong cách.
+
+**Đưa slide vào Figma**: Figma Design không mở được tệp PDF, nên app xuất **SVG**, định dạng Figma nhận
+thành layer sửa được (chữ là text thật, hình là vector, ảnh giữ nguyên).
+- **Tải cho Figma (SVG)**: tệp .zip, mỗi slide một tệp `slide-01.svg`, `slide-02.svg`… Giải nén, chọn tất
+  cả tệp SVG rồi kéo thả vào Figma: mỗi slide thành một frame 960×540.
+- **Sao chép slide cho Figma** (ở khung Xem trước): sao chép slide đang xem, mở Figma và bấm Ctrl+V.
+- Nếu máy chưa cài font của chủ đề (Calibri, Cambria, Segoe UI), Figma sẽ báo thiếu font và cho chọn font
+  thay thế. Muốn làm cả bộ trong **Figma Slides**, có thể nhập thẳng tệp .pptx (Figma đổi font sang Inter).
+- Lần đầu mất vài giây để xuất; các lần sau dùng lại bản đã xuất cho tới khi slide được sửa.
 
 ### Dán liên kết YouTube / Facebook
 
@@ -94,6 +103,29 @@ tuổi, livestream hay DRM; những video đó sẽ báo lỗi kèm gợi ý t�
   Google Slides. Chế độ đọc vẫn hiển thị nội dung gốc do AI tạo; chỉnh sửa trong Google Slides không tự
   cập nhật ngược về ứng dụng.
 * **Bài đã tạo** (góc trên): mở lại các bài trước ở Chế độ đọc, Google Slides hoặc tải lại PowerPoint.
+
+## 3c. Trích dẫn, Studio học tập và sửa slide bằng câu lệnh
+
+Cả ba tính năng **không làm chậm việc tạo bài**: chúng chỉ chạy khi bạn dùng, trên luồng riêng của máy chủ
+(không nằm trong hàng đợi tạo bài). Khi một bài khác đang ở bước AI, tác vụ phụ tự chờ để bài đó được ưu tiên.
+
+* **Trích dẫn bấm được** (Chế độ đọc): mục *Nội dung trên slide & nguồn* gắn từng ý trên slide với thời điểm
+  được nói trong video (so khớp với bản ghi lời nói, không dùng AI). Ý nào không tìm được đoạn khớp đủ chắc
+  thì không gắn mốc, thay vì gắn sai. Bấm vào mốc thời gian:
+  * video tải lên / Facebook: phát ngay trong ứng dụng đúng đoạn đó. Video gốc được giữ
+    `KEEP_SOURCE_VIDEO_HOURS` giờ (mặc định 24) sau khi xong rồi tự xóa; `0` = xóa ngay như trước;
+  * video YouTube: mở YouTube đúng giây đó.
+* **Studio học tập** (nút *Studio* trong Chế độ đọc hoặc *Studio học tập* ở màn hình kết quả):
+  * *Sơ đồ tư duy* và *Dòng thời gian*: có ngay, dựng từ dàn ý, không gọi AI;
+  * *Bản tóm tắt*, *Hỏi đáp (FAQ)*, *Câu hỏi trắc nghiệm*, *Thẻ ghi nhớ*: bấm **Tạo** thì AI mới viết (thường
+    dưới 1 phút, lâu hơn khi GPU đang khởi động). Mỗi mục có chip *Slide n · mm:ss* để mở đúng slide. Khi bài
+    được sửa sau đó, nội dung cũ được đánh dấu và có nút **Tạo lại theo bản mới**.
+* **Sửa slide bằng câu lệnh** (cuối phần giải thích của mỗi slide): gõ yêu cầu (ví dụ "tách thành 2 ý", "thêm
+  ví dụ trong video", "đổi sang dạng quy trình"), bấm **Thêm vào danh sách sửa**, làm tiếp với các slide khác
+  (tối đa 6 slide mỗi lần), rồi bấm **Áp dụng** một lần để chỉ chờ GPU khởi động một lần. AI viết lại đúng các
+  slide đó với cùng quy tắc bám nội dung video như lúc tạo bài; tệp PowerPoint được dựng lại (không chạy lại
+  FFmpeg, Whisper hay ảnh AI). **Hoàn tác lần sửa gần nhất** trả lại bản trước (giữ tối đa 10 bản).
+  Bản Google Slides đã tạo không bao giờ bị ghi đè: nó được đánh dấu là cũ, bạn có thể tạo bản mới.
 
 ## 4. AI viết nội dung: mặc định chỉ Ollama trên Modal (`LLM_PROVIDER=modal_ollama`); `auto` = Gemini trước, Ollama dự phòng
 
@@ -204,6 +236,8 @@ Danh sách đầy đủ có chú thích: `.env.example`.
 | *Video không có âm thanh* | Ứng dụng cần lời nói để tạo nội dung |
 | *Không phát hiện được lời nói* | Âm thanh quá nhỏ/nhiễu hoặc sai ngôn ngữ; thử `Tự động nhận diện` |
 | Phần xem trước báo không tạo được ảnh | Cần Microsoft PowerPoint (hoặc LibreOffice + `pypdfium2`); tệp .pptx vẫn tải được |
+| Không tải được PDF / SVG cho Figma | Cũng cần PowerPoint hoặc LibreOffice như ảnh xem trước (SVG cần thêm PyMuPDF) |
+| Nút *Sao chép slide cho Figma* báo bị chặn | Trình duyệt không cho ghi clipboard; dùng *Tải cho Figma (SVG)* rồi kéo thả |
 | Nhận dạng sai nhiều từ | Dùng `WHISPER_MODEL=small` (cần tải model một lần) |
 | Ứng dụng bị tắt giữa chừng | Mở lại, mở công việc và bấm **Thử lại** |
 

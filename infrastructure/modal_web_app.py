@@ -36,8 +36,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    # ffmpeg: frame/URL helpers; LibreOffice + fonts: slide preview PNGs (Vietnamese glyphs need Noto/DejaVu).
-    .apt_install("ffmpeg", "libreoffice-impress", "fonts-dejavu", "fonts-noto-core")
+    # ffmpeg: frame/URL helpers; LibreOffice + fonts: slide preview PNGs and the Figma PDF (Vietnamese glyphs
+    # need Noto/DejaVu; Carlito/Caladea are metric-compatible with the decks' Calibri/Cambria so text keeps its layout).
+    .apt_install("ffmpeg", "libreoffice-impress", "fonts-dejavu", "fonts-noto-core",
+                 "fonts-crosextra-carlito", "fonts-crosextra-caladea")
     .pip_install(
         "fastapi>=0.115,<1.0",
         "uvicorn>=0.30",
@@ -48,6 +50,7 @@ image = (
         "Pillow>=10.3",
         "yt-dlp[default]>=2025.10",
         "pypdfium2>=4.30",
+        "pymupdf>=1.24",
     )
     .env({"PYTHONUNBUFFERED": "1"})
     .add_local_dir(ROOT / "app", "/root/app", ignore=["**/__pycache__", "**/*.pyc"])

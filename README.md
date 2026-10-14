@@ -46,6 +46,10 @@ MP4 upload / YouTube·Facebook link (yt-dlp)
 | Google Slides | OAuth (Desktop client, loopback + PKCE, scope `drive.file` only, token in `data/google/token.json`). The finished .pptx is uploaded with conversion to a native, editable Google Slides file, read back through the Slides API and validated (slide count, 16:9, pictures, titles); speaker notes are compared per slide and rewritten via `speakerNotesObjectId` when missing, then verified. Idempotent (Drive `appProperties`), never overwrites an existing presentation, retries 429/5xx, reuses the existing AI images. Setup: [docs/GOOGLE_SLIDES_SETUP_VI.md](docs/GOOGLE_SLIDES_SETUP_VI.md) |
 | Reading Mode | Slide image (local PowerPoint render, else cached Google thumbnail, else a text card) with the explanation below it; prev/next, thumbnails, ← → / Home / End / F, swipe, fullscreen, counter, progress, timestamps, transcript excerpt; stacks on phones. A read-only "check sync" reports slides deleted/added/reordered or notes edited in Google Slides |
 | Library | "Bài đã tạo": reopen earlier decks in Reading Mode / Google Slides / re-download (`KEEP_FINISHED_PRESENTATIONS`) |
+| Citations | Every on-slide point is linked to the moment it is said (word matching against the transcript in `app/citations.py`, no LLM, computed when Reading Mode opens). Timestamps play the kept source video in the app (signed, short-lived link with HTTP Range; kept `KEEP_SOURCE_VIDEO_HOURS`, default 24, then deleted by the cleanup) or open YouTube at that second |
+| Studio | Mind map and timeline straight from the outline (instant); summary, FAQ, quiz and flashcards written by the LLM only on request, citing slide numbers (`app/studio.py`). Stored per deck, marked stale after the deck changes |
+| Slide edits | Plain-language edit requests, queued and applied together; the pipeline's slide writer (same schema, grounding checks, repairs) rewrites only those slides, then the .pptx is rebuilt from cached frames/illustrations. Undo keeps the last 10 outlines; a Google Slides copy is marked stale, never overwritten (`app/slide_edit.py`) |
+| Side tasks | Studio and slide edits never enter the job queue: each runs on its own background thread, and before every LLM request it waits while the job worker is in an LLM stage (`app/ai/assist.py`, `jobs.main_llm_busy`), so a deck being made is not slowed down |
 | Security | Server-issued job IDs only (no user paths), no `shell=True`, upload size cap while streaming, optional shared password (`APP_PASSWORD`), API key sent in a header (never in URLs/logs) |
 
 ## Project layout
@@ -89,6 +93,9 @@ tests/                      pytest suite
 | `GET` | `/api/jobs/{id}/transcript` | `transcript.json` |
 | `GET` | `/api/jobs/{id}/transcript.txt` | readable transcript |
 | `GET` | `/api/jobs/{id}/download` | the `.pptx` |
+| `GET` | `/api/jobs/{id}/download.pdf` | vector PDF, one 960×540 pt page per slide (text kept as text, fonts embedded); rendered on demand by PowerPoint/LibreOffice and cached until the deck changes |
+| `GET` | `/api/jobs/{id}/figma.zip` | one SVG per slide for Figma Design (which cannot import PDF): live `<text>` layers, vector shapes, embedded pictures; PDF → SVG with PyMuPDF (AGPL), cached (`app/figma_export.py`) |
+| `GET` | `/api/jobs/{id}/figma/{n}.svg` | one slide's SVG (the UI copies it for Ctrl+V into Figma) |
 | `DELETE` | `/api/jobs/{id}` | delete a finished job and its files |
 | `GET` | `/api/jobs/{id}/illustrations` | per-slide illustration status |
 | `GET` | `/api/jobs/{id}/illustrations/{slide_id}.jpg` | one generated illustration |
@@ -102,6 +109,13 @@ tests/                      pytest suite
 | `GET` | `/api/google/oauth/callback` | OAuth redirect target |
 | `POST` | `/api/google/disconnect` | revoke access and delete the local token |
 | `GET` | `/api/library` | finished presentations |
+| `GET` | `/api/jobs/{id}/video/link` | signed, short-lived URL of the kept source video (in-app playback) |
+| `GET` | `/api/jobs/{id}/video?exp=&sig=` | the source video (HTTP Range) |
+| `GET` | `/api/jobs/{id}/studio` | Studio outputs and their state + slide index (number, title, first moment) |
+| `GET` | `/api/jobs/{id}/studio/{kind}` | `mindmap` / `timeline` (instant) or `summary` / `faq` / `quiz` / `flashcards` |
+| `POST` | `/api/jobs/{id}/studio/{kind}` | write one generated output on the studio thread (202) |
+| `POST` | `/api/jobs/{id}/edits` | `{"edits": [{"slide_number": 3, "instruction": "..."}]}` rewrite those slides and rebuild (202) |
+| `POST` | `/api/jobs/{id}/edits/undo` | restore the outline from before the last edit and rebuild (202) |
 | `GET` | `/api/admin/images/usage` | GPU usage/limits (header `X-Admin-Token`, needs `ADMIN_TOKEN`) |
 | `POST` | `/api/admin/images/kill-switch` | `{"active": true}` stops new GPU work immediately |
 
@@ -133,7 +147,8 @@ use its secret store instead. Main variables:
 | `YOUTUBE_RETRIEVAL` / `FACEBOOK_RETRIEVAL` | `off` (template: `ytdlp`) | `ytdlp` downloads links with yt-dlp; only for content you may process |
 | `GOOGLE_SLIDES_ENABLED` | `true` | Google Slides output (needs the OAuth client file) |
 | `GOOGLE_OAUTH_CLIENT_FILE` | `data/google/client_secret.json` | Desktop-app OAuth client JSON |
-| `KEEP_FINISHED_PRESENTATIONS` | `true` | keep finished decks for the library; videos are always deleted |
+| `KEEP_FINISHED_PRESENTATIONS` | `true` | keep finished decks for the library |
+| `KEEP_SOURCE_VIDEO_HOURS` | 24 | source video kept (renamed, not copied) for in-app playback of Reading Mode timestamps, then deleted by the periodic cleanup; `0` = delete as soon as the deck is done |
 | `WHISPER_MODEL` | `base` | `tiny` / `base` / `small` |
 | `DEFAULT_LANGUAGE` | `vi` | `vi`, `en`, `auto` |
 | `MAX_UPLOAD_MB` / `MAX_DURATION_SEC` / `MAX_FRAMES` | 80 / 600 / 8 | MVP limits |

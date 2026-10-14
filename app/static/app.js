@@ -36,7 +36,7 @@ const LAYOUT_NAMES = {
 const LANG_NAMES = { vi: "Tiếng Việt", en: "English" };
 const PLATFORM_NAMES = { youtube: "YouTube", facebook: "Facebook" };
 const GOOGLE_STEPS = { uploading: "đang tải lên Google Drive", validating: "đang kiểm tra bản chuyển đổi", notes: "đang ghi chú thuyết trình" };
-const VIEWS = ["authView", "uploadView", "processView", "resultView", "readingView", "libraryView"];
+const VIEWS = ["authView", "uploadView", "processView", "resultView", "readingView", "libraryView", "studioView"];
 
 const state = {
   config: null, file: null, duration: null, jobId: null, pollTimer: null, job: null,
@@ -243,9 +243,11 @@ async function init() {
     wrap.appendChild(lab);
   }
 
-  if (c.media_processing === "modal") {
-    $("footText").textContent = "Video được xử lý trên máy chủ đám mây riêng của ứng dụng và tự động xóa sau khi hoàn tất.";
-  }
+  const where = c.media_processing === "modal" ? "trên máy chủ đám mây riêng của ứng dụng" : "trên máy của bạn";
+  const keep = c.keep_source_video_hours > 0
+    ? `được giữ ${c.keep_source_video_hours} giờ sau khi hoàn tất (để phát lại đúng đoạn trong Chế độ đọc) rồi tự động xóa.`
+    : "tự động xóa sau khi hoàn tất.";
+  $("footText").textContent = `Video được xử lý ${where} và ${keep}`;
   restorePrefs();
   updateSubmit();
 
@@ -322,6 +324,12 @@ function route() {
     return;
   }
   if (params.has("library")) { openLibrary(false); return; }
+  const st = params.get("studio");
+  if (st && /^[0-9a-f]{32}$/.test(st)) {
+    const k = params.get("k");
+    openStudio(st, STUDIO_HELP[k] ? k : "mindmap", false);
+    return;
+  }
   const jobId = params.get("job") || store.get("lastJob");
   if (jobId && /^[0-9a-f]{32}$/.test(jobId)) {
     state.jobId = jobId;
@@ -1184,6 +1192,7 @@ async function loadPreview() {
   $("previewStrip").innerHTML = "";
   $("previewStage").hidden = true;
   $("previewCounter").textContent = "";
+  $("copyFigmaBtn").hidden = true;
   $("previewNote").textContent = "Đang tạo ảnh xem trước…";
   $("previewNote").hidden = false;
   card.hidden = false;
@@ -1199,6 +1208,7 @@ async function loadPreview() {
     return;
   }
   preview.urls = data.slides;
+  $("copyFigmaBtn").hidden = !navigator.clipboard;
   $("previewNote").hidden = true;
   $("previewStage").hidden = false;
   const strip = $("previewStrip");
@@ -1297,14 +1307,58 @@ async function regenerateIllustration(slideId, btn) {
 }
 
 async function downloadPptx(jobId = state.jobId) {
-  const btn = $("downloadBtn");
+  return downloadFile(`/api/jobs/${jobId}/download`, "downloadBtn", "presentation.pptx");
+}
+
+async function downloadPdf(jobId = state.jobId) {
+  return downloadFile(`/api/jobs/${jobId}/download.pdf`, "downloadPdfBtn", "presentation.pdf",
+    "Đang xuất PDF…");
+}
+
+async function downloadFigma(jobId = state.jobId) {
+  return downloadFile(`/api/jobs/${jobId}/figma.zip`, "downloadFigmaBtn", "presentation - Figma.zip",
+    "Đang xuất cho Figma…");
+}
+
+// Figma turns pasted SVG markup into editable layers, so one slide goes straight from here to the canvas.
+async function copySlideForFigma() {
+  const btn = $("copyFigmaBtn");
+  const label = btn.textContent;
   btn.disabled = true;
+  btn.textContent = "Đang chuẩn bị…";
   try {
-    const res = await api(`/api/jobs/${jobId}/download`);
+    const n = preview.index + 1;
+    const svg = api(`/api/jobs/${state.jobId}/figma/${n}.svg`).then((r) => r.text());
+    // Hand the clipboard a promise inside the click: the export may take seconds, longer than the browser
+    // keeps the click's permission to write the clipboard.
+    if (window.ClipboardItem && navigator.clipboard.write) {
+      const blob = svg.then((t) => new Blob([t], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    } else {
+      await navigator.clipboard.writeText(await svg);
+    }
+    toast(`Đã sao chép slide ${n}. Mở Figma và bấm Ctrl+V để dán.`);
+  } catch (e) {
+    toast(e.name === "NotAllowedError"
+      ? "Trình duyệt chặn sao chép. Hãy dùng nút Tải cho Figma (SVG) rồi kéo thả tệp vào Figma."
+      : e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function downloadFile(url, btnId, fallbackName, busyLabel = "") {
+  const btn = $(btnId);
+  const label = btn.textContent;
+  btn.disabled = true;
+  if (busyLabel) btn.textContent = busyLabel;
+  try {
+    const res = await api(url);
     const blob = await res.blob();
     const cd = res.headers.get("Content-Disposition") || "";
     const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
-    const name = m ? decodeURIComponent(m[1] || m[2]) : "presentation.pptx";
+    const name = m ? decodeURIComponent(m[1] || m[2]) : fallbackName;
     const a = el("a");
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -1315,6 +1369,7 @@ async function downloadPptx(jobId = state.jobId) {
     toast(e.message, true);
   } finally {
     btn.disabled = false;
+    btn.textContent = label;
   }
 }
 
@@ -1366,10 +1421,18 @@ async function retry() {
 // ------------------------------------------------------------------ Reading Mode
 // The app owns the current slide index; slide image, explanation, title, counter, thumbnails
 // and progress are all rendered from it (no reliance on an embedded Google Slides iframe).
-const reader = { data: null, index: 0, jobId: null, returnTo: "resultView" };
+const reader = { data: null, index: 0, jobId: null, returnTo: "resultView", edits: [], videoUrl: null,
+  editTimer: null, justEdited: false };
 
 async function openReader(jobId, index = 0, push = true) {
-  reader.returnTo = !$("libraryView").hidden ? "libraryView" : "resultView";
+  if ($("readingView").hidden) {
+    reader.returnTo = !$("libraryView").hidden ? "libraryView" : !$("studioView").hidden ? "studioView" : "resultView";
+  }
+  if (reader.jobId !== jobId) {
+    reader.edits = [];
+    reader.justEdited = false;
+    resetVideo();
+  }
   reader.jobId = jobId;
   showView("readingView");
   $("readerTitle").textContent = "Đang tải…";
@@ -1400,6 +1463,8 @@ async function openReader(jobId, index = 0, push = true) {
     $("readerNotice").hidden = false;
   }
   buildReaderStrip();
+  renderEditBar();
+  if (editRunning()) watchEdit();
   goTo(Math.min(index, data.slides.length - 1), false);
   $("readerNotes").focus({ preventScroll: true });
 }
@@ -1536,25 +1601,25 @@ function renderReaderNotes(s, n) {
     t.append(el("h3", null, "Điều cần nhớ"), el("p", null, rn.key_takeaway));
     box.appendChild(t);
   }
+  const cited = (s.point_sources || []).filter((p) => p.text);
+  if (cited.length && cited.some((p) => p.start != null)) {
+    // Each on-slide point with the moment of the video it comes from (matched against the transcript).
+    box.appendChild(el("h3", null, "Nội dung trên slide & nguồn"));
+    const ul = el("ul", "rn-points");
+    for (const p of cited) {
+      const li = el("li");
+      li.appendChild(el("span", null, p.text));
+      if (p.start != null) li.appendChild(timeChip(p.start, fmtClock(p.start)));
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
   if (s.source_timestamps && s.source_timestamps.length) {
     box.appendChild(el("h3", null, "Thời điểm trong video gốc"));
     const times = el("div", "rn-times");
-    const src = reader.data.source_url;
     for (const r of s.source_timestamps) {
       const label = r.end > r.start ? `${fmtClock(r.start)} – ${fmtClock(r.end)}` : fmtClock(r.start);
-      if (src) {
-        // Open the original YouTube video at this moment.
-        const a = el("a", null, label);
-        const u = new URL(src);
-        u.searchParams.set("t", `${Math.floor(r.start)}s`);
-        a.href = u.toString();
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.title = "Mở video gốc tại thời điểm này";
-        times.appendChild(a);
-      } else {
-        times.appendChild(el("span", null, label));
-      }
+      times.appendChild(timeChip(r.start, label));
     }
     box.appendChild(times);
   }
@@ -1563,7 +1628,210 @@ function renderReaderNotes(s, n) {
     d.append(el("summary", null, "Trích lời giảng gốc"), el("p", null, s.transcript_excerpt));
     box.appendChild(d);
   }
+  if (reader.data.editable) box.appendChild(editBox(s, n));
   box.scrollTop = 0;
+}
+
+// A timestamp: plays the kept source video in the app, else opens the YouTube original at that moment.
+function timeChip(sec, label) {
+  const d = reader.data || {};
+  if (d.video_available) {
+    const b = el("button", "time-chip", label);
+    b.type = "button";
+    b.title = "Phát video tại thời điểm này";
+    b.addEventListener("click", () => playAt(sec));
+    return b;
+  }
+  if (d.source_url) {
+    const a = el("a", "time-chip", label);
+    const u = new URL(d.source_url);
+    u.searchParams.set("t", `${Math.floor(sec)}s`);
+    a.href = u.toString();
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = "Mở video gốc tại thời điểm này";
+    return a;
+  }
+  return el("span", "time-chip", label);
+}
+
+async function playAt(sec) {
+  const v = $("readerPlayer");
+  try {
+    if (!reader.videoUrl) reader.videoUrl = (await (await api(`/api/jobs/${reader.jobId}/video/link`)).json()).url;
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  $("readerVideo").hidden = false;
+  if (!v.getAttribute("src")) {
+    v.src = reader.videoUrl;
+    v.addEventListener("error", () => toast("Trình duyệt không phát được video này.", true), { once: true });
+  }
+  const seek = () => { v.currentTime = Math.max(0, sec - 1); v.play().catch(() => {}); };
+  if (v.readyState >= 1) seek(); else v.addEventListener("loadedmetadata", seek, { once: true });
+  $("readerVideo").scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function closeVideo() {
+  $("readerPlayer").pause();
+  $("readerVideo").hidden = true;
+}
+
+function resetVideo() {
+  const v = $("readerPlayer");
+  v.pause();
+  v.removeAttribute("src");
+  v.load();
+  $("readerVideo").hidden = true;
+  reader.videoUrl = null;
+}
+
+// ------------------------------------------------------------------ slide edits (queued, applied together)
+function editBox(s, n) {
+  const d = el("details", "rn-edit");
+  const queued = reader.edits.filter((e) => e.slide_number === n + 1);
+  d.appendChild(el("summary", null, queued.length ? `Sửa slide này (${queued.length} yêu cầu đang chờ)` : "Sửa slide này bằng câu lệnh"));
+  const ta = el("textarea");
+  ta.rows = 2;
+  ta.maxLength = reader.data.max_instruction || 400;
+  ta.placeholder = "Ví dụ: tách thành 2 ý rõ hơn · thêm ví dụ trong video · đổi sang dạng quy trình · viết ngắn gọn hơn";
+  ta.setAttribute("aria-label", `Yêu cầu sửa slide ${n + 1}`);
+  const add = el("button", "btn", "Thêm vào danh sách sửa");
+  add.type = "button";
+  add.disabled = editRunning();
+  add.addEventListener("click", () => {
+    const text = ta.value.trim();
+    if (!text) { ta.focus(); return; }
+    const max = reader.data.max_edits || 6;
+    const slides = new Set(reader.edits.map((e) => e.slide_number));
+    slides.add(n + 1);
+    if (slides.size > max) { toast(`Mỗi lần chỉ sửa tối đa ${max} slide.`, true); return; }
+    reader.edits.push({ slide_number: n + 1, instruction: text });
+    renderEditBar();
+    renderReaderNotes(s, n);
+    toast(`Đã thêm yêu cầu sửa slide ${n + 1}. Bấm "Áp dụng" khi đã thêm đủ.`);
+  });
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) add.click(); });
+  d.append(ta, add);
+  if (queued.length) {
+    const list = el("ul", "muted small");
+    for (const e of queued) list.appendChild(el("li", null, e.instruction));
+    d.appendChild(list);
+    d.open = true;
+  }
+  d.appendChild(el("p", "muted small", "Có thể thêm yêu cầu cho nhiều slide rồi áp dụng một lần (chỉ chờ GPU khởi động một lần). AI chỉ dùng nội dung có trong video; có thể hoàn tác."));
+  return d;
+}
+
+function editRunning() {
+  const e = reader.data && reader.data.edit;
+  return Boolean(e && (e.state === "queued" || e.state === "running"));
+}
+
+const EDIT_STEPS = { writing: "AI đang viết lại", building: "Đang dựng lại bài trình chiếu cho" };
+
+function renderEditBar() {
+  const bar = $("editBar");
+  const d = reader.data;
+  if (!d || !d.editable) { bar.hidden = true; return; }
+  const e = d.edit || {};
+  const running = editRunning();
+  let text = "";
+  if (running) {
+    const which = e.kind === "undo" ? "Đang hoàn tác lần sửa gần nhất…"
+      : `${EDIT_STEPS[e.step] || "Đang chờ sửa"} slide ${(e.slides || []).join(", ")}…`;
+    text = e.message ? `${which} ${e.message}` : which;
+  } else if (reader.edits.length) {
+    const slides = [...new Set(reader.edits.map((x) => x.slide_number))].sort((a, b) => a - b);
+    text = `${reader.edits.length} yêu cầu sửa đang chờ cho slide ${slides.join(", ")}.`;
+    if (e.state === "failed" && reader.justEdited) text = `Chưa sửa được: ${e.error} ${text} Bấm "Áp dụng" để thử lại.`;
+  } else if (e.state === "failed" && reader.justEdited) {
+    text = `Chưa sửa được: ${e.error}`;
+  } else if (e.state === "done" && reader.justEdited) {
+    text = e.kind === "undo" ? "Đã hoàn tác." : `Đã sửa xong slide ${(e.slides || []).join(", ")}.`;
+    if (e.notices && e.notices.length) text += " " + e.notices.join(" ");
+  }
+  const undo = Boolean(e.undo_available) && !running && !reader.edits.length;
+  bar.hidden = !text && !undo;
+  bar.classList.toggle("busy", running);
+  bar.classList.toggle("warn", !running && e.state === "failed" && reader.justEdited);
+  $("editBarText").textContent = text || "Bài này đã được sửa bằng câu lệnh.";
+  $("editApply").hidden = running || !reader.edits.length;
+  $("editClear").hidden = running || !reader.edits.length;
+  $("editUndo").hidden = !undo;
+}
+
+async function applyEdits() {
+  if (!reader.edits.length) return;
+  $("editApply").disabled = true;
+  try {
+    const r = await (await postJson(`/api/jobs/${reader.jobId}/edits`, { edits: reader.edits })).json();
+    reader.sentEdits = reader.edits;  // given back if the edit fails, so nothing has to be typed again
+    reader.edits = [];
+    reader.data.edit = { ...(reader.data.edit || {}), state: "queued", kind: "edit", step: null, slides: r.slides || [] };
+    renderEditBar();
+    renderReaderNotes(reader.data.slides[reader.index], reader.index);
+    watchEdit();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    $("editApply").disabled = false;
+  }
+}
+
+function clearEdits() {
+  reader.edits = [];
+  renderEditBar();
+  renderReaderNotes(reader.data.slides[reader.index], reader.index);
+}
+
+async function undoEdit() {
+  if (!confirm("Hoàn tác lần sửa gần nhất? Các slide sẽ trở lại như trước lần sửa đó.")) return;
+  try {
+    await postJson(`/api/jobs/${reader.jobId}/edits/undo`);
+    reader.data.edit = { ...(reader.data.edit || {}), state: "queued", kind: "undo" };
+    renderEditBar();
+    watchEdit();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// Poll the job while an edit runs (on its own server thread), then reload the deck at the same slide.
+function watchEdit() {
+  clearTimeout(reader.editTimer);
+  const jobId = reader.jobId;
+  const tick = async () => {
+    if (reader.jobId !== jobId || $("readingView").hidden) return;
+    let job;
+    try {
+      job = await (await api(`/api/jobs/${jobId}`)).json();
+    } catch {
+      reader.editTimer = setTimeout(tick, 4000);
+      return;
+    }
+    reader.data.edit = job.edit;
+    if (editRunning()) {
+      renderEditBar();
+      reader.editTimer = setTimeout(tick, 2000);
+      return;
+    }
+    reader.justEdited = true;
+    if (job.edit && job.edit.state === "done") {
+      reader.sentEdits = [];
+      if (state.job && state.job.id === jobId) state.job = job;  // the result page shows the rebuilt deck
+      await openReader(jobId, reader.index, false);
+    } else {
+      if (job.edit && job.edit.kind === "edit" && reader.sentEdits && reader.sentEdits.length) {
+        reader.edits = reader.sentEdits.concat(reader.edits);
+        reader.sentEdits = [];
+        renderReaderNotes(reader.data.slides[reader.index], reader.index);
+      }
+      renderEditBar();
+    }
+  };
+  reader.editTimer = setTimeout(tick, 1500);
 }
 
 function notesAsText(s, n) {
@@ -1589,8 +1857,11 @@ async function copyNotes(s, n, btn) {
 
 function closeReader() {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  clearTimeout(reader.editTimer);
+  $("readerPlayer").pause();
   const back = reader.returnTo;
   if (back === "libraryView") { openLibrary(true); return; }
+  if (back === "studioView" && studio.jobId === reader.jobId) { openStudio(reader.jobId, studio.kind); return; }
   if (state.job && state.job.id === reader.jobId && state.job.status === "done") {
     history.replaceState(null, "", `#job=${reader.jobId}`);
     showView("resultView");
@@ -1633,6 +1904,323 @@ async function checkGoogleSync() {
   notice.hidden = false;
   btn.disabled = false;
   btn.textContent = "Kiểm tra đồng bộ";
+}
+
+// ------------------------------------------------------------------ Studio
+// Study material made from a finished deck. Mind map and timeline come straight from the outline;
+// summary, FAQ, quiz and flashcards are written by the AI on a server thread of their own, only on request.
+const studio = { jobId: null, kind: "mindmap", data: null, timer: null, cache: {} };
+const STUDIO_HELP = {
+  mindmap: "Cấu trúc bài: các phần, slide và ý chính. Bấm vào một mục để mở slide đó.",
+  timeline: "Các slide theo thứ tự thời gian trong video.",
+  summary: "Bản tóm tắt để ôn nhanh: tổng quan, các ý chính và điều cần nhớ.",
+  faq: "Những câu hỏi người học hay đặt ra sau khi xem, kèm câu trả lời từ nội dung video.",
+  quiz: "Câu hỏi trắc nghiệm để tự kiểm tra mức độ hiểu bài.",
+  flashcards: "Thẻ ghi nhớ thuật ngữ và ý chính, lật thẻ để xem đáp án.",
+};
+
+async function openStudio(jobId, kind = "mindmap", push = true) {
+  clearTimeout(studio.timer);
+  if (studio.jobId !== jobId) studio.cache = {};
+  studio.jobId = jobId;
+  studio.kind = kind;
+  showView("studioView");
+  if (push) history.pushState(null, "", `#studio=${jobId}&k=${kind}`);
+  $("studioTitle").textContent = (reader.jobId === jobId && reader.data) ? reader.data.title : "Đang tải…";
+  $("studioBody").innerHTML = "";
+  try {
+    studio.data = await (await api(`/api/jobs/${jobId}/studio`)).json();
+  } catch (e) {
+    $("studioBody").appendChild(el("p", "notice", e.message));
+    return;
+  }
+  if (!(reader.jobId === jobId && reader.data)) {
+    api(`/api/jobs/${jobId}/reading`).then((r) => r.json()).then((d) => { $("studioTitle").textContent = d.title; }).catch(() => {});
+  }
+  renderStudioTabs();
+  showStudioKind(kind, false);
+}
+
+function renderStudioTabs() {
+  const tabs = $("studioTabs");
+  tabs.innerHTML = "";
+  for (const k of studio.data.kinds) {
+    const it = studio.data.items[k];
+    const b = el("button", "studio-tab");
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(k === studio.kind));
+    b.appendChild(el("span", null, it.label));
+    const badge = it.instant ? "" : it.state === "done" ? (it.stale ? "cũ" : "✓")
+      : (it.state === "queued" || it.state === "running") ? "…" : it.state === "failed" ? "!" : "AI";
+    if (badge) b.appendChild(el("small", `tab-badge ${it.state}`, badge));
+    b.addEventListener("click", () => showStudioKind(k));
+    tabs.appendChild(b);
+  }
+}
+
+async function showStudioKind(kind, push = true) {
+  studio.kind = kind;
+  if (push) history.replaceState(null, "", `#studio=${studio.jobId}&k=${kind}`);
+  renderStudioTabs();
+  const body = $("studioBody");
+  const it = studio.data.items[kind];
+  body.innerHTML = "";
+  body.appendChild(el("p", "muted", STUDIO_HELP[kind]));
+  if (!it.instant && it.state !== "done") { renderStudioPending(kind, it); return; }
+  let out = studio.cache[kind];
+  if (!out || out.updated_at !== it.updated_at) {
+    try {
+      out = await (await api(`/api/jobs/${studio.jobId}/studio/${kind}`)).json();
+    } catch (e) {
+      body.appendChild(el("p", "notice", e.message));
+      return;
+    }
+    studio.cache[kind] = out;
+  }
+  if (studio.kind !== kind) return;
+  if (it.stale) {
+    const n = el("div", "notice");
+    n.appendChild(el("span", null, "Bài trình chiếu đã được sửa sau khi tạo nội dung này. "));
+    n.appendChild(studioCreateButton(kind, "Tạo lại theo bản mới"));
+    body.appendChild(n);
+  }
+  const render = { mindmap: renderMindmap, timeline: renderTimeline, summary: renderSummary, faq: renderFaq,
+    quiz: renderQuiz, flashcards: renderFlashcards }[kind];
+  body.appendChild(render(out.data));
+  if (!it.instant && !it.stale) {
+    const again = el("p", "muted small studio-again");
+    again.append(el("span", null, "Chưa ưng ý? "), studioCreateButton(kind, "Tạo lại", true));
+    body.appendChild(again);
+  }
+}
+
+function renderStudioPending(kind, it) {
+  const body = $("studioBody");
+  const box = el("div", "studio-pending");
+  if (it.state === "queued" || it.state === "running") {
+    box.appendChild(el("span", "spinner"));
+    box.appendChild(el("p", null, it.message || "AI đang tạo nội dung… (thường dưới 1 phút; lâu hơn nếu GPU đang khởi động)"));
+    box.appendChild(el("p", "muted small", "Bạn có thể xem các mục khác trong lúc chờ."));
+    pollStudio();
+  } else {
+    if (it.state === "failed") box.appendChild(el("p", "notice", `Lần trước chưa tạo được: ${it.error}`));
+    box.appendChild(el("p", null, "Nội dung này được AI tạo từ chính bài trình chiếu, chỉ khi bạn yêu cầu."));
+    box.appendChild(studioCreateButton(kind, it.state === "failed" ? "Thử lại" : `Tạo ${it.label.toLowerCase()}`));
+  }
+  body.appendChild(box);
+}
+
+function studioCreateButton(kind, label, ghost = false) {
+  const b = el("button", ghost ? "btn ghost small" : "btn primary", label);
+  b.type = "button";
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await postJson(`/api/jobs/${studio.jobId}/studio/${kind}`);
+      studio.data.items[kind] = { ...studio.data.items[kind], state: "queued", error: null, stale: false };
+      delete studio.cache[kind];
+      if (studio.kind === kind) showStudioKind(kind, false);
+      else renderStudioTabs();
+    } catch (e) {
+      toast(e.message, true);
+      b.disabled = false;
+    }
+  });
+  return b;
+}
+
+function pollStudio() {
+  clearTimeout(studio.timer);
+  const jobId = studio.jobId;
+  studio.timer = setTimeout(async () => {
+    if ($("studioView").hidden || studio.jobId !== jobId) return;
+    try {
+      const prev = studio.data.items;
+      studio.data = await (await api(`/api/jobs/${jobId}/studio`)).json();
+      const cur = studio.data.items[studio.kind];
+      const was = prev[studio.kind] || {};
+      if (cur.state !== was.state || cur.message !== was.message) showStudioKind(studio.kind, false);
+      else renderStudioTabs();
+      if (Object.values(studio.data.items).some((i) => i.state === "queued" || i.state === "running")) pollStudio();
+    } catch {
+      pollStudio();
+    }
+  }, 2500);
+}
+
+// "Slide 4 · 02:10" links: open the slide in Reading Mode.
+function slideRefs(nums) {
+  const wrap = el("span", "slide-refs");
+  for (const n of nums || []) {
+    const meta = (studio.data.slides || [])[n - 1];
+    if (!meta) continue;
+    const b = el("button", "slide-ref", meta.start != null ? `Slide ${n} · ${fmtClock(meta.start)}` : `Slide ${n}`);
+    b.type = "button";
+    b.title = meta.title;
+    b.addEventListener("click", () => openReader(studio.jobId, n - 1));
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+
+function renderMindmap(root) {
+  const tree = el("div", "mindmap");
+  tree.appendChild(el("div", "mm-root", root.text));
+  const build = (nodes, depth) => {
+    const ul = el("ul");
+    for (const n of nodes) {
+      const li = el("li");
+      const label = el(n.slide && depth < 2 ? "button" : "span", `mm-node d${depth}`, n.text);
+      if (label.tagName === "BUTTON") {
+        label.type = "button";
+        label.title = `Mở slide ${n.slide}`;
+        label.addEventListener("click", () => openReader(studio.jobId, n.slide - 1));
+      }
+      li.appendChild(label);
+      if (n.children && n.children.length) li.appendChild(build(n.children, depth + 1));
+      ul.appendChild(li);
+    }
+    return ul;
+  };
+  tree.appendChild(build(root.children || [], 0));
+  return tree;
+}
+
+function renderTimeline(data) {
+  if (!data.items.length) return el("p", "muted", "Bài này chưa có mốc thời gian theo video.");
+  const ol = el("ol", "studio-timeline");
+  for (const r of data.items) {
+    const li = el("li");
+    const t = el("span", "tl-time", `${fmtClock(r.start)} – ${fmtClock(r.end)}`);
+    const b = el("button", "tl-title", `Slide ${r.slide}: ${r.title}`);
+    b.type = "button";
+    b.addEventListener("click", () => openReader(studio.jobId, r.slide - 1));
+    li.append(t, b);
+    if (r.summary) li.appendChild(el("p", "muted small", r.summary));
+    ol.appendChild(li);
+  }
+  return ol;
+}
+
+function renderSummary(d) {
+  const box = el("div", "studio-summary");
+  box.appendChild(el("p", "lead", d.overview));
+  box.appendChild(el("h3", null, "Các ý chính"));
+  const ol = el("ol");
+  for (const p of d.key_points) {
+    const li = el("li");
+    li.append(el("span", null, p.text), slideRefs(p.slides));
+    ol.appendChild(li);
+  }
+  box.appendChild(ol);
+  if (d.conclusion) {
+    const t = el("div", "rn-takeaway");
+    t.append(el("h3", null, "Điều cần nhớ"), el("p", null, d.conclusion));
+    box.appendChild(t);
+  }
+  return box;
+}
+
+function renderFaq(d) {
+  const box = el("div", "studio-faq");
+  d.items.forEach((q, i) => {
+    const det = el("details");
+    if (i === 0) det.open = true;
+    det.appendChild(el("summary", null, q.question));
+    const p = el("p", null, q.answer);
+    det.append(p, slideRefs(q.slides));
+    box.appendChild(det);
+  });
+  return box;
+}
+
+function renderQuiz(d) {
+  const box = el("div", "studio-quiz");
+  const score = el("p", "quiz-score muted");
+  let answered = 0, correct = 0;
+  const update = () => { score.textContent = `Đã trả lời ${answered}/${d.questions.length} · Đúng ${correct}`; };
+  d.questions.forEach((q, i) => {
+    const card = el("div", "quiz-q");
+    card.appendChild(el("p", "quiz-question", `${i + 1}. ${q.question}`));
+    const opts = el("div", "quiz-options");
+    const feedback = el("div", "quiz-feedback");
+    feedback.hidden = true;
+    q.options.forEach((o, k) => {
+      const b = el("button", "quiz-option", `${"ABCD"[k]}. ${o}`);
+      b.type = "button";
+      b.addEventListener("click", () => {
+        if (card.dataset.done) return;
+        card.dataset.done = "1";
+        answered++;
+        if (k === q.answer_index) correct++;
+        opts.querySelectorAll("button").forEach((x, j) => {
+          x.disabled = true;
+          if (j === q.answer_index) x.classList.add("right");
+          else if (j === k) x.classList.add("wrong");
+        });
+        feedback.innerHTML = "";
+        feedback.appendChild(el("strong", null, k === q.answer_index ? "Chính xác! " : `Chưa đúng. Đáp án: ${"ABCD"[q.answer_index]}. `));
+        if (q.explanation) feedback.appendChild(el("span", null, q.explanation));
+        feedback.appendChild(slideRefs(q.slides));
+        feedback.hidden = false;
+        update();
+      });
+      opts.appendChild(b);
+    });
+    card.append(opts, feedback);
+    box.appendChild(card);
+  });
+  const reset = el("button", "btn ghost small", "Làm lại");
+  reset.type = "button";
+  reset.addEventListener("click", () => box.replaceWith(renderQuiz(d)));
+  update();
+  const head = el("div", "row quiz-head");
+  head.append(score, reset);
+  box.prepend(head);
+  return box;
+}
+
+function renderFlashcards(d) {
+  const box = el("div", "studio-cards");
+  let i = 0;
+  const counter = el("p", "muted small");
+  const card = el("button", "flashcard");
+  card.type = "button";
+  card.setAttribute("aria-live", "polite");
+  const refs = el("div");
+  const show = (flip = false) => {
+    const c = d.cards[i];
+    card.classList.toggle("flipped", flip);
+    card.innerHTML = "";
+    card.append(el("span", "fc-side", flip ? "Mặt sau" : "Mặt trước"), el("span", "fc-text", flip ? c.back : c.front),
+      el("span", "fc-hint muted small", flip ? "Bấm để xem mặt trước" : "Bấm để lật thẻ"));
+    counter.textContent = `Thẻ ${i + 1} / ${d.cards.length}`;
+    refs.innerHTML = "";
+    if (flip) refs.appendChild(slideRefs(c.slides));
+  };
+  card.addEventListener("click", () => show(!card.classList.contains("flipped")));
+  const prev = el("button", "btn ghost", "‹ Thẻ trước");
+  const next = el("button", "btn", "Thẻ sau ›");
+  prev.type = next.type = "button";
+  prev.addEventListener("click", () => { i = (i - 1 + d.cards.length) % d.cards.length; show(); });
+  next.addEventListener("click", () => { i = (i + 1) % d.cards.length; show(); });
+  const nav = el("div", "row fc-nav");
+  nav.append(prev, counter, next);
+  box.append(card, refs, nav);
+  show();
+  return box;
+}
+
+function closeStudio() {
+  clearTimeout(studio.timer);
+  if (reader.jobId === studio.jobId && reader.data) { openReader(studio.jobId, reader.index); return; }
+  if (state.job && state.job.id === studio.jobId && state.job.status === "done") {
+    history.replaceState(null, "", `#job=${studio.jobId}`);
+    showView("resultView");
+    return;
+  }
+  openLibrary();
 }
 
 // ------------------------------------------------------------------ library
@@ -1759,6 +2347,9 @@ $("rightsCheck").addEventListener("change", updateSubmit);
 $("useUploadBtn").addEventListener("click", () => setMode("file"));
 $("uploadForm").addEventListener("submit", upload);
 $("downloadBtn").addEventListener("click", () => downloadPptx());
+$("downloadPdfBtn").addEventListener("click", () => downloadPdf());
+$("downloadFigmaBtn").addEventListener("click", () => downloadFigma());
+$("copyFigmaBtn").addEventListener("click", copySlideForFigma);
 $("transcriptBtn").addEventListener("click", toggleTranscript);
 $("newBtn").addEventListener("click", startOver);
 $("restartBtn").addEventListener("click", () => {
@@ -1780,6 +2371,14 @@ $("readerPrev").addEventListener("click", () => goTo(reader.index - 1));
 $("readerNext").addEventListener("click", () => goTo(reader.index + 1));
 $("readerFull").addEventListener("click", toggleFullscreen);
 $("readerCheck").addEventListener("click", checkGoogleSync);
+$("readerStudio").addEventListener("click", () => openStudio(reader.jobId));
+$("readerVideoClose").addEventListener("click", closeVideo);
+$("editApply").addEventListener("click", applyEdits);
+$("editClear").addEventListener("click", clearEdits);
+$("editUndo").addEventListener("click", undoEdit);
+$("studioBtn").addEventListener("click", () => openStudio(state.jobId));
+$("studioBack").addEventListener("click", closeStudio);
+$("studioRead").addEventListener("click", () => openReader(studio.jobId, 0));
 $("libraryBtn").addEventListener("click", () => openLibrary());
 $("libraryClose").addEventListener("click", startOver);
 $("libraryStart").addEventListener("click", startOver);
@@ -1854,6 +2453,7 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "Escape" && !document.fullscreenElement) closeReader();
     return;
   }
+  if (!$("studioView").hidden && e.key === "Escape") { closeStudio(); return; }
   if ($("resultView").hidden || !preview.urls.length) return;
   if (e.key === "ArrowLeft") showSlide(preview.index - 1);
   if (e.key === "ArrowRight") showSlide(preview.index + 1);
@@ -1878,6 +2478,12 @@ window.addEventListener("hashchange", () => {
   if (read && read === reader.jobId && !$("readingView").hidden) {
     const s = (parseInt(p.get("s"), 10) || 1) - 1;
     if (s !== reader.index) goTo(s, false);
+    return;
+  }
+  const st = p.get("studio");
+  if (st && st === studio.jobId && !$("studioView").hidden) {
+    const k = p.get("k");
+    if (k && k !== studio.kind && STUDIO_HELP[k]) showStudioKind(k, false);
     return;
   }
   const onJob = !$("processView").hidden || !$("resultView").hidden;

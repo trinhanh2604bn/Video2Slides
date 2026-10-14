@@ -156,8 +156,12 @@ def run_job(job_id: str) -> None:
         if outcome is not None:
             notices.extend(_illustration_notices(outcome))
 
-        # Free disk: the source video and frames are no longer needed.
-        video.unlink(missing_ok=True)
+        # The pipeline no longer needs the source video: keep it (a rename, no copy) for in-app playback of the
+        # Reading Mode timestamps until the periodic cleanup expires it, or delete it now.
+        if config.settings.keep_source_video_hours > 0 and video.exists():
+            video.replace(d / jobs.PLAYBACK_NAME)
+        else:
+            video.unlink(missing_ok=True)
         _save_to_library(job_id, d, pres, opts, layout_mode, report.slide_count)
 
         # 7. Native Google Slides (optional). A Google failure never loses the finished .pptx.

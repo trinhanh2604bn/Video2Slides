@@ -46,6 +46,11 @@ _lock = threading.RLock()
 _queue: "queue.Queue[str]" = queue.Queue()
 _worker: threading.Thread | None = None
 _runner: Callable[[str], None] | None = None
+_current: str | None = None  # job being processed by the worker thread
+
+# Stages in which the main pipeline talks to the LLM. Side tasks (Studio, slide edits) wait while a job is in
+# one of them, so they never delay a deck being made (the Modal LLM worker serves one request at a time).
+LLM_STAGES = ("analyzing", "writing_slides")
 
 
 class JobNotFound(Exception):
@@ -179,6 +184,17 @@ def busy() -> bool:
     return _queue.unfinished_tasks > 0
 
 
+def main_llm_busy() -> bool:
+    """The job worker is currently in an LLM stage (side tasks must yield to it)."""
+    job_id = _current
+    if job_id is None:
+        return False
+    try:
+        return load(job_id).get("stage") in LLM_STAGES
+    except (JobNotFound, ValueError, OSError):
+        return False
+
+
 def enqueue(job_id: str) -> int:
     """Queue a job and return its position (1 = next)."""
     update(job_id, status="queued", stage="queued", error=None, cancel_requested=False, progress=None)
@@ -200,13 +216,25 @@ def cleanup_expired() -> int:
             created = data.get("created_at", 0)
             active = data.get("status") in ("queued", "running", "downloading")
             if data.get("status") == "done" and settings.keep_finished_presentations:
-                continue  # kept for the library / Reading Mode (the source video is already deleted)
+                _expire_playback(d, data)
+                continue  # kept for the library / Reading Mode
         except (JobNotFound, ValueError, OSError):
             created, active = d.stat().st_mtime, False
         if created < cutoff and not active:
             shutil.rmtree(d, ignore_errors=True)
             removed += 1
     return removed
+
+
+PLAYBACK_NAME = "source_video.mp4"
+
+
+def _expire_playback(d: Path, data: dict) -> None:
+    """The source video kept for in-app playback is deleted after KEEP_SOURCE_VIDEO_HOURS."""
+    video = d / PLAYBACK_NAME
+    finished = data.get("finished_at") or data.get("created_at") or 0
+    if video.exists() and finished < time.time() - settings.keep_source_video_hours * 3600:
+        video.unlink(missing_ok=True)
 
 
 def recover_after_restart() -> None:
@@ -228,6 +256,7 @@ def recover_after_restart() -> None:
 
 
 def _loop() -> None:
+    global _current
     last_cleanup = 0.0
     while True:
         try:
@@ -251,11 +280,13 @@ def _loop() -> None:
         except (JobNotFound, ValueError, OSError):
             _queue.task_done()
             continue
+        _current = job_id
         try:
             _runner(job_id)
         except Exception:  # the runner records its own errors; never kill the worker
             log.exception("job %s crashed", job_id)
         finally:
+            _current = None
             _queue.task_done()
 
 

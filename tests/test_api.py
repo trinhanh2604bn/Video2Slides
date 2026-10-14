@@ -91,8 +91,12 @@ def test_full_flow_upload_to_download(client, sample_mp4):
                                        "finalizing", "completed"}
 
     d = jobs.job_dir(job_id)
-    assert not (d / "input.mp4").exists()  # source video deleted after success
+    assert not (d / "input.mp4").exists()  # the pipeline input is gone after success...
+    assert (d / jobs.PLAYBACK_NAME).exists()  # ...renamed (not copied) for in-app playback until it expires
     assert not (d / "audio.wav").exists()
+    link = client.get(f"/api/jobs/{job_id}/video/link").json()["url"]
+    part = client.get(link, headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206 and len(part.content) == 100
 
     dl = client.get(f"/api/jobs/{job_id}/download")
     assert dl.status_code == 200
@@ -224,6 +228,62 @@ def test_preview_endpoint_without_renderer(client, sample_mp4, monkeypatch):
     assert body["available"] is False and body["slides"] == []
     assert client.get(f"/api/jobs/{job_id}/preview/1.png").status_code == 404
     assert client.get(f"/api/jobs/{job_id}/preview/0.png").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}/download.pdf").status_code == 503
+
+
+def test_pdf_download_for_figma(client, sample_mp4, monkeypatch):
+    from app import preview
+
+    calls = []
+
+    def fake_render(job_dir, pptx):
+        calls.append(pptx)
+        out = preview.pdf_path(job_dir)
+        out.write_bytes(b"%PDF-1.7 fake")
+        return out
+
+    with sample_mp4.open("rb") as fh:
+        job_id = client.post("/api/jobs", files={"file": ("bài giảng.mp4", fh, "video/mp4")}).json()["job_id"]
+    assert _wait(client, job_id)["status"] == "done"
+    monkeypatch.setattr(preview, "engine", lambda: "libreoffice")  # after the job: never part of the pipeline
+    monkeypatch.setattr(preview, "render_pdf", fake_render)
+    r = client.get(f"/api/jobs/{job_id}/download.pdf")
+    assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    assert r.headers["content-type"] == "application/pdf"
+    assert ".pdf" in r.headers["content-disposition"]
+    assert calls and calls[0].name == "presentation.pptx"
+
+
+def test_figma_svg_export(client, sample_mp4, monkeypatch):
+    from app import figma_export, preview
+
+    with sample_mp4.open("rb") as fh:
+        job_id = client.post("/api/jobs", files={"file": ("v.mp4", fh, "video/mp4")}).json()["job_id"]
+    assert _wait(client, job_id)["status"] == "done"
+
+    def fake_render(job_dir, pptx):
+        d = figma_export.svg_dir(job_dir)
+        d.mkdir(exist_ok=True)
+        for i in (1, 2):
+            (d / f"slide-{i:02d}.svg").write_text(f"<svg>{i}</svg>", encoding="utf-8")
+        return sorted(d.glob("*.svg"))
+
+    monkeypatch.setattr(preview, "engine", lambda: "libreoffice")
+    monkeypatch.setattr(figma_export, "render_svgs", fake_render)
+    r = client.get(f"/api/jobs/{job_id}/figma.zip")
+    assert r.status_code == 200 and r.content[:2] == b"PK"
+    import io, zipfile
+    assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == ["slide-01.svg", "slide-02.svg"]
+    one = client.get(f"/api/jobs/{job_id}/figma/2.svg")
+    assert one.status_code == 200 and one.text == "<svg>2</svg>"
+    assert client.get(f"/api/jobs/{job_id}/figma/3.svg").status_code == 404
+
+
+def test_figma_svg_keeps_one_x_per_line():
+    from app.figma_export import clean_svg
+
+    svg = '<svg viewBox="0 0 960 540"><text><tspan y="-4" x="50.4 71.9 81.25">AI</tspan></text></svg>'
+    assert clean_svg(svg) == '<svg viewBox="0 0 960 540"><text><tspan y="-4" x="50.4">AI</tspan></text></svg>'
 
 
 def test_app_starts_without_gemini_key_or_local_ollama_and_defaults_to_modal_ollama(tmp_path):

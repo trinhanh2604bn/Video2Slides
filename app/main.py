@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import re
+import secrets
 import shutil
 import threading
 import time
@@ -20,7 +21,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import jobs, library, preview, uploads
+from . import figma_export, jobs, library, preview, slide_edit, studio, uploads
 from .ai import Presentation, active_provider_name, recommend_slide_count
 from .ai.health import llm_status
 from .config import SUPPORTED_LANGUAGES, settings
@@ -32,6 +33,7 @@ from .illustrations.planner import DENSITIES
 from .pipeline import INPUT_NAME, google_ready, load_outline, output_path, run_job, submit_google_export
 from .pptx_engine import THEMES
 from .pptx_engine.builder import LAYOUT_MODES
+from .citations import Matcher
 from .reading import slide_payload, speaker_notes_text
 from .transcribe import Transcript
 from .url_import import service as url_service
@@ -112,6 +114,7 @@ def _public(job: dict) -> dict:
             "cancel_requested", "status_message")
     out = {k: job.get(k) for k in keys}
     out["google"] = _public_google(job.get("google"))
+    out["edit"] = slide_edit.public_state(job)
     src = job.get("source") or {"type": "upload"}
     out["source"] = {k: src.get(k) for k in ("type", "platform", "url", "title", "thumbnail") if k in src}
     if job.get("status") == "queued":
@@ -173,6 +176,7 @@ def public_config(x_app_password: str | None = Header(default=None)) -> dict:
     return {
         "max_upload_mb": settings.max_upload_mb,
         "max_duration_sec": settings.max_duration_sec,
+        "keep_source_video_hours": settings.keep_source_video_hours,
         "languages": SUPPORTED_LANGUAGES,
         "default_language": settings.default_language,
         "styles": {k: t.label for k, t in THEMES.items()},
@@ -536,6 +540,7 @@ def retry_job(job_id: str) -> dict:
     job = _load_job(job_id)
     if job["status"] not in ("failed", "cancelled"):
         raise HTTPException(status_code=409, detail="Chỉ có thể thử lại công việc bị lỗi hoặc đã hủy.")
+    _no_edit_running(job)
     d = jobs.job_dir(job_id)
     has_input = (d / INPUT_NAME).exists() or (d / "transcript.json").exists()
     from_url = (job.get("source") or {}).get("type") == "url"
@@ -623,6 +628,63 @@ def download(job_id: str):
     )
 
 
+@app.get("/api/jobs/{job_id}/download.pdf", dependencies=[Depends(require_access)])
+def download_pdf(job_id: str):
+    """Vector PDF, one page per slide (16:9): drag it into Figma to get one editable frame per slide.
+    Rendered from the finished .pptx on first request (never part of the main pipeline), then cached."""
+    job = _load_job(job_id)
+    d = jobs.job_dir(job_id)
+    pptx = output_path(d)
+    if job["status"] != "done" or not pptx.exists():
+        raise HTTPException(status_code=404, detail="Bản trình chiếu chưa sẵn sàng.")
+    if not preview.engine():
+        raise HTTPException(status_code=503,
+                            detail="Máy chủ chưa cài PowerPoint hoặc LibreOffice nên chưa xuất được PDF.")
+    try:
+        path = preview.render_pdf(d, pptx)
+    except preview.PreviewError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    stem = Path(job.get("filename") or "presentation").stem or "presentation"
+    return FileResponse(path, media_type="application/pdf", filename=f"{stem}.pdf")
+
+
+def _figma_source(job_id: str) -> tuple[dict, Path, Path]:
+    job = _load_job(job_id)
+    d = jobs.job_dir(job_id)
+    pptx = output_path(d)
+    if job["status"] != "done" or not pptx.exists():
+        raise HTTPException(status_code=404, detail="Bản trình chiếu chưa sẵn sàng.")
+    if not preview.engine():
+        raise HTTPException(status_code=503,
+                            detail="Máy chủ chưa cài PowerPoint hoặc LibreOffice nên chưa xuất được cho Figma.")
+    return job, d, pptx
+
+
+@app.get("/api/jobs/{job_id}/figma.zip", dependencies=[Depends(require_access)])
+def download_figma(job_id: str):
+    """One SVG per slide in a ZIP: drag the SVGs into Figma Design for one editable frame per slide."""
+    job, d, pptx = _figma_source(job_id)
+    try:
+        path = figma_export.render_zip(d, pptx)
+    except figma_export.FigmaExportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    stem = Path(job.get("filename") or "presentation").stem or "presentation"
+    return FileResponse(path, media_type="application/zip", filename=f"{stem} - Figma.zip")
+
+
+@app.get("/api/jobs/{job_id}/figma/{number}.svg", dependencies=[Depends(require_access)])
+def figma_slide(job_id: str, number: int):
+    """One slide as SVG markup (the UI copies it to the clipboard for Ctrl+V into Figma)."""
+    _, d, pptx = _figma_source(job_id)
+    try:
+        files = figma_export.render_svgs(d, pptx)
+    except figma_export.FigmaExportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not 1 <= number <= len(files):
+        raise HTTPException(status_code=404, detail="Không tìm thấy slide.")
+    return FileResponse(files[number - 1], media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+
 @app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_access)], status_code=204)
 def delete_job(job_id: str):
     try:
@@ -633,6 +695,8 @@ def delete_job(job_id: str):
         raise HTTPException(status_code=404, detail="Không tìm thấy công việc.")
     if job and job["status"] in ("running", "downloading"):
         raise HTTPException(status_code=409, detail="Công việc đang chạy, không thể xóa.")
+    if job:
+        _no_edit_running(job)
     if job:
         jobs.delete(job_id)
     library.delete(job_id)
@@ -695,6 +759,7 @@ def regenerate_illustration(job_id: str, slide_id: str) -> dict:
     job = _load_job(job_id)
     if job["status"] not in ("done", "failed"):
         raise HTTPException(status_code=409, detail="Công việc đang xử lý, hãy đợi hoàn tất.")
+    _no_edit_running(job)
     _illustration_entry(job_id, slide_id)
     opts = job.get("options") or {}
     if not (opts.get("illustrations") or {}).get("enabled"):
@@ -807,6 +872,7 @@ def google_export(job_id: str, body: GoogleExportIn) -> dict:
         raise HTTPException(status_code=409, detail="Bài trình chiếu chưa sẵn sàng.")
     if (job.get("google") or {}).get("state") in ("queued", "running"):
         raise HTTPException(status_code=409, detail="Đang tạo bản Google Slides, vui lòng đợi.")
+    _no_edit_running(job)
     if not google_ready():
         raise HTTPException(status_code=409, detail="Chưa kết nối tài khoản Google.")
     submit_google_export(job_id, body.new_copy)
@@ -873,12 +939,13 @@ def reading(job_id: str) -> dict:
                 source = "local"
         except preview.PreviewError as exc:
             log.info("reading previews unavailable: %s", exc)
-    if source is None and gmeta and len(gmeta.get("slides") or []) == len(pres.slides):
+    if source is None and gmeta and len(gmeta.get("slides") or []) == len(pres.slides)             and not _google_stale(job_id):
         images = [f"/api/jobs/{job_id}/google/thumbnail/{i}.png" for i in range(1, len(pres.slides) + 1)]
         source = "google"
     slides = []
+    matcher = Matcher(transcript)
     for s, img in zip(pres.slides, images):
-        item = slide_payload(s, transcript)
+        item = slide_payload(s, transcript, matcher)
         item["image"] = img
         slides.append(item)
     return {
@@ -886,7 +953,63 @@ def reading(job_id: str) -> dict:
         "slide_count": len(slides), "image_source": source, "slides": slides,
         "google_url": (gmeta or {}).get("url"), "pptx_available": pptx.exists(),
         "source_url": _youtube_source_url(job_id),
+        "video_available": (d / jobs.PLAYBACK_NAME).is_file(),
+        **_edit_info(job_id, d),
     }
+
+
+def _edit_info(job_id: str, d: Path) -> dict:
+    """Whether slides can be edited (finished job with its outline) and the state of the last edit."""
+    if not (d / "job.json").exists():
+        return {"editable": False, "edit": None}  # library-only entry: the job folder is gone
+    job = jobs.load(job_id)
+    return {"editable": job.get("status") == "done" and (d / "outline.json").exists(),
+            "edit": slide_edit.public_state(job), "max_edits": slide_edit.MAX_EDITS,
+            "max_instruction": slide_edit.MAX_INSTRUCTION}
+
+
+# The <video> element cannot send the password header, so playback uses a short-lived signed link instead.
+_VIDEO_KEY = secrets.token_bytes(32)  # per process: links stop working after a restart (the page asks again)
+VIDEO_LINK_TTL_SEC = 6 * 3600
+
+
+def _video_sig(job_id: str, exp: int) -> str:
+    return hmac.new(_VIDEO_KEY, f"{job_id}:{exp}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _playback_file(job_id: str) -> Path:
+    try:
+        path = jobs.job_dir(job_id) / jobs.PLAYBACK_NAME
+    except jobs.JobNotFound:
+        raise HTTPException(status_code=404, detail="Không tìm thấy video.") from None
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Video gốc không còn được lưu (đã hết thời gian giữ).")
+    return path
+
+
+@app.get("/api/jobs/{job_id}/video/link", dependencies=[Depends(require_access)])
+def video_link(job_id: str) -> dict:
+    """Signed URL of the kept source video, for in-app playback of Reading Mode timestamps."""
+    _playback_file(job_id)
+    exp = int(time.time()) + VIDEO_LINK_TTL_SEC
+    return {"url": f"/api/jobs/{job_id}/video?exp={exp}&sig={_video_sig(job_id, exp)}"}
+
+
+@app.get("/api/jobs/{job_id}/video")
+def video_file(job_id: str, exp: int = 0, sig: str = ""):
+    """The source video (HTTP Range supported, so the player can seek to a timestamp)."""
+    if exp < time.time() or not hmac.compare_digest(sig.encode(), _video_sig(job_id, exp).encode()):
+        raise HTTPException(status_code=403, detail="Liên kết video đã hết hạn, hãy mở lại Chế độ đọc.")
+    return FileResponse(_playback_file(job_id), media_type="video/mp4",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+
+def _google_stale(job_id: str) -> bool:
+    """The deck was rebuilt after the Google copy was made (its thumbnails show the old slides)."""
+    try:
+        return (jobs.job_dir(job_id) / "job.json").exists() and             (jobs.load(job_id).get("google") or {}).get("state") == "stale"
+    except jobs.JobNotFound:
+        return False
 
 
 def _youtube_source_url(job_id: str) -> str | None:
@@ -927,6 +1050,71 @@ def library_list() -> dict:
         except jobs.JobNotFound:
             it["available"] = False
     return {"items": items}
+
+
+# ---------------------------------------------------------------------- Studio (side outputs, own thread)
+
+def _studio_call(fn, *args):
+    try:
+        return fn(*args)
+    except studio.StudioError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+
+@app.get("/api/jobs/{job_id}/studio", dependencies=[Depends(require_access)])
+def studio_overview(job_id: str) -> dict:
+    """Studio outputs of a deck and their state. Mind map and timeline are always ready (no LLM)."""
+    return _studio_call(studio.overview, job_id)
+
+
+@app.get("/api/jobs/{job_id}/studio/{kind}", dependencies=[Depends(require_access)])
+def studio_get(job_id: str, kind: str) -> dict:
+    return _studio_call(studio.get, job_id, kind)
+
+
+@app.post("/api/jobs/{job_id}/studio/{kind}", dependencies=[Depends(require_access), Depends(same_origin)],
+          status_code=202)
+def studio_create(job_id: str, kind: str) -> dict:
+    """Write one Studio output with the LLM on the studio thread (never the job queue)."""
+    return _studio_call(studio.submit, job_id, kind)
+
+
+# ---------------------------------------------------------------------- slide edits (own thread)
+
+def _no_edit_running(job: dict) -> None:
+    if slide_edit.running(job):
+        raise HTTPException(status_code=409, detail="Đang áp dụng yêu cầu sửa slide, vui lòng đợi.")
+
+
+class SlideEditIn(BaseModel):
+    slide_number: int = Field(ge=1, le=99)
+    instruction: str = Field(min_length=1, max_length=slide_edit.MAX_INSTRUCTION)
+
+
+class SlideEditsIn(BaseModel):
+    edits: list[SlideEditIn] = Field(min_length=1, max_length=20)
+
+
+@app.post("/api/jobs/{job_id}/edits", dependencies=[Depends(require_access), Depends(same_origin)],
+          status_code=202)
+def slide_edits(job_id: str, body: SlideEditsIn) -> dict:
+    """Apply queued edit requests (rewritten by the LLM on the slide-edit thread, then the deck is rebuilt)."""
+    _load_job(job_id)
+    try:
+        return slide_edit.submit(job_id, [e.model_dump() for e in body.edits])
+    except slide_edit.EditError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+
+@app.post("/api/jobs/{job_id}/edits/undo", dependencies=[Depends(require_access), Depends(same_origin)],
+          status_code=202)
+def slide_edits_undo(job_id: str) -> dict:
+    """Restore the outline from before the last edit and rebuild the deck."""
+    _load_job(job_id)
+    try:
+        return slide_edit.submit_undo(job_id)
+    except slide_edit.EditError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
 
 
 # ---------------------------------------------------------------------- admin (GPU cost control)

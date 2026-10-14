@@ -14,6 +14,8 @@ dependencies = [
     "Pillow>=10.3",
     # YouTube / Facebook link import (YOUTUBE_RETRIEVAL / FACEBOOK_RETRIEVAL=ytdlp); [default] adds the JS solver
     "yt-dlp[default]>=2025.10",
+    # PDF -> SVG with live text for the Figma export (AGPL; accepted by the owner)
+    "pymupdf>=1.24",
 ]
 
 [project.optional-dependencies]
