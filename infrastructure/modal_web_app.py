@@ -16,7 +16,8 @@ Architecture
 * The container scales to zero after ``V2S_WEB_SCALEDOWN_SEC`` without requests. The page polls job status while
   open, so a job keeps the container alive while someone watches it; set ``V2S_WEB_MIN_CONTAINERS=1`` at deploy
   time to keep it always on (CPU billed 24/7).
-* Modal web requests are limited to 150 s, so a direct video upload must finish within that time.
+* Modal web requests are limited to 150 s, so the browser uploads videos in resumable chunks
+  (``app/uploads.py``); each chunk is one short request.
 """
 
 from __future__ import annotations

@@ -25,7 +25,7 @@ from ..config import settings
 from ..video import MediaError, basic_validate, ffmpeg_available, validate
 from . import metadata as md_mod
 from . import retrieval
-from .errors import UPLOAD_HINT, UrlImportError
+from .errors import UrlImportError, fallback_hint
 from .urls import ParsedUrl, parse_video_url, resolve_short_link, safe_thumbnail
 
 log = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ def check_url(raw: str, client_factory: Callable[[], httpx.Client] = http_client
         status, message = "ready", "Video sẵn sàng để tạo bài trình chiếu."
     else:
         status = STATUS_FOR_CODE.get(code, "error")
-        message = f"{UrlImportError(code, err_detail).message} {UPLOAD_HINT}"
+        message = f"{UrlImportError(code, err_detail).message} {fallback_hint(parsed.platform, code)}"
     check = VideoCheck(
         platform=parsed.platform,
         platform_label=PLATFORM_LABELS[parsed.platform],
@@ -238,10 +238,12 @@ def _run_download(job_id: str) -> None:
     from ..ai import recommend_slide_count
     from ..pipeline import INPUT_NAME
 
+    platform = None
     try:
         d = jobs.job_dir(job_id)
         job = jobs.load(job_id)
         source = job.get("source") or {}
+        platform = source.get("platform")
         # Re-check policy at execution time: the operator may have disabled retrieval meanwhile.
         if retrieval_mode(source.get("platform", "")) != source.get("method"):
             raise UrlImportError("retrieval_disabled")
@@ -281,12 +283,12 @@ def _run_download(job_id: str) -> None:
         jobs.update(job_id, options=options, media=media)
         jobs.enqueue(job_id)
     except UrlImportError as exc:
-        _fail(job_id, f"{exc.message} {UPLOAD_HINT}")
+        _fail(job_id, f"{exc.message} {fallback_hint(platform, exc.code)}")
     except jobs.JobNotFound:
         pass  # deleted while waiting
     except Exception:
         log.exception("download for job %s crashed", job_id)
-        _fail(job_id, f"Tải video thất bại do lỗi không mong muốn. {UPLOAD_HINT}")
+        _fail(job_id, f"Tải video thất bại do lỗi không mong muốn. {fallback_hint(platform, 'download_failed')}")
     finally:
         with _pending_lock:
             _pending -= 1

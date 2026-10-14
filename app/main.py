@@ -15,10 +15,11 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import jobs, library, preview
+from . import jobs, library, preview, uploads
 from .ai import Presentation, active_provider_name, recommend_slide_count
 from .ai.health import llm_status
 from .config import SUPPORTED_LANGUAGES, settings
@@ -205,15 +206,6 @@ def create_job(
                     raise HTTPException(status_code=413, detail=f"Tệp vượt quá {settings.max_upload_mb} MB.")
                 digest.update(chunk)
                 fh.write(chunk)
-        content_hash = digest.hexdigest()
-        if existing := jobs.find_active_duplicate(content_hash, options):
-            # Double click / resubmit of a video that is already being processed: follow that job.
-            jobs.delete(job_id)
-            return {"job_id": existing, "queue_position": jobs.pending_count(), "duplicate": True}
-        info = _validate_upload(target)
-    except MediaError as exc:
-        jobs.delete(job_id)
-        raise HTTPException(status_code=400, detail=str(exc)) from None
     except HTTPException:
         jobs.delete(job_id)
         raise
@@ -223,6 +215,24 @@ def create_job(
         raise HTTPException(status_code=500, detail="Không lưu được tệp tải lên.") from None
     finally:
         file.file.close()
+    return _queue_uploaded(job_id, target, options, digest.hexdigest())
+
+
+def _queue_uploaded(job_id: str, target: Path, options: dict, content_hash: str) -> dict:
+    """Validate a stored upload and queue its job (shared by the single-request and chunked uploads)."""
+    try:
+        if existing := jobs.find_active_duplicate(content_hash, options):
+            # Double click / resubmit of a video that is already being processed: follow that job.
+            jobs.delete(job_id)
+            return {"job_id": existing, "queue_position": jobs.pending_count(), "duplicate": True}
+        info = _validate_upload(target)
+    except MediaError as exc:
+        jobs.delete(job_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception:
+        jobs.delete(job_id)
+        log.exception("upload validation failed")
+        raise HTTPException(status_code=500, detail="Không kiểm tra được tệp tải lên.") from None
 
     media = None
     if info is not None:
@@ -235,6 +245,97 @@ def create_job(
     jobs.update(job_id, options=options, content_hash=content_hash, media=media)
     position = jobs.enqueue(job_id)
     return {"job_id": job_id, "queue_position": position}
+
+
+# ---------------------------------------------------------------------- chunked (resumable) upload
+# Hosted web requests are time-limited (Modal: 150 s), so the browser sends big files as small PUTs.
+
+class UploadStartIn(BaseModel):
+    filename: str = Field(max_length=255)
+    size: int = Field(gt=0)
+
+
+class UploadFinishIn(BaseModel):
+    title: str = Field(default="", max_length=150)
+    language: str = ""
+    style: str = "professional"
+    slide_count: int = Field(default=0, ge=0, le=40)
+    ai_images: bool = False
+    image_density: str = "standard"
+    layout_mode: str = ""
+    google_slides: bool = False
+
+
+def _upload_status(upload_id: str) -> dict:
+    try:
+        return uploads.status(upload_id)
+    except uploads.UploadNotFound:
+        raise HTTPException(status_code=404, detail="Phiên tải lên đã hết hạn, vui lòng chọn lại tệp.") from None
+
+
+@app.post("/api/uploads", dependencies=[Depends(require_access)], status_code=201)
+def start_upload(body: UploadStartIn) -> dict:
+    if _busy():
+        raise HTTPException(status_code=429, detail="Hệ thống đang bận, vui lòng thử lại sau ít phút.")
+    display = _safe_display_name(body.filename)
+    if not display.lower().endswith(".mp4"):
+        raise HTTPException(status_code=400, detail="Chỉ hỗ trợ tệp .mp4.")
+    if body.size > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail=f"Tệp vượt quá {settings.max_upload_mb} MB.")
+    _check_disk_space(body.size)
+    return uploads.create(display, body.size) | {"max_chunk_bytes": uploads.MAX_CHUNK_BYTES}
+
+
+@app.get("/api/uploads/{upload_id}", dependencies=[Depends(require_access)])
+def get_upload(upload_id: str) -> dict:
+    return _upload_status(upload_id)
+
+
+@app.put("/api/uploads/{upload_id}", dependencies=[Depends(require_access)])
+async def put_upload_chunk(upload_id: str, request: Request, offset: int) -> dict:
+    """Append one chunk at ``offset``. 409 carries the server's byte count so the client can resume."""
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > uploads.MAX_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Phần dữ liệu tải lên quá lớn.")
+    data = bytearray()
+    async for part in request.stream():
+        data += part
+        if len(data) > uploads.MAX_CHUNK_BYTES:
+            raise HTTPException(status_code=413, detail="Phần dữ liệu tải lên quá lớn.")
+    if not data:
+        raise HTTPException(status_code=400, detail="Phần dữ liệu tải lên rỗng.")
+    try:
+        return await run_in_threadpool(uploads.append, upload_id, offset, bytes(data))
+    except uploads.UploadNotFound:
+        raise HTTPException(status_code=404, detail="Phiên tải lên đã hết hạn, vui lòng chọn lại tệp.") from None
+    except uploads.OffsetMismatch as exc:
+        raise HTTPException(status_code=409, detail={"received": exc.received}) from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dữ liệu tải lên vượt quá kích thước tệp đã khai báo.") from None
+
+
+@app.post("/api/uploads/{upload_id}/finish", dependencies=[Depends(require_access)], status_code=202)
+def finish_upload(upload_id: str, body: UploadFinishIn) -> dict:
+    """Turn a complete chunked upload into a queued job (same checks as POST /api/jobs)."""
+    st = _upload_status(upload_id)
+    if not st["complete"]:
+        raise HTTPException(status_code=409, detail={"received": st["received"]})
+    options = _job_options(body.title, body.language, body.style, body.slide_count, body.ai_images,
+                           body.image_density, body.layout_mode, body.google_slides)
+    job_id, d = jobs.new_job(options, uploads.filename(upload_id))
+    target = d / INPUT_NAME
+    try:
+        uploads.take(upload_id, target)
+        digest = hashlib.sha256()
+        with target.open("rb") as fh:
+            while chunk := fh.read(CHUNK):
+                digest.update(chunk)
+    except Exception:
+        jobs.delete(job_id)
+        uploads.discard(upload_id)
+        log.exception("chunked upload finish failed")
+        raise HTTPException(status_code=500, detail="Không lưu được tệp tải lên.") from None
+    return _queue_uploaded(job_id, target, options, digest.hexdigest())
 
 
 def _check_disk_space(incoming_bytes: int) -> None:

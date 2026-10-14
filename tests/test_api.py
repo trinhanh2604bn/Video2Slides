@@ -235,3 +235,74 @@ def test_app_starts_without_gemini_key_or_local_ollama_and_defaults_to_modal_oll
     llm = json.loads(out.stdout.strip().splitlines()[-1])
     assert llm["provider"] == "modal_ollama" and llm["local"] is False
     assert llm["model"] == "qwen3:4b" and "gemini_configured" not in llm  # Gemini is not in the default route
+
+
+# ---------------------------------------------------------------- chunked upload
+
+def _start_upload(client, data: bytes, name="a.mp4"):
+    r = client.post("/api/uploads", json={"filename": name, "size": len(data)})
+    assert r.status_code == 201, r.text
+    return r.json()["upload_id"]
+
+
+def test_chunked_upload_rejects_bad_requests(client):
+    assert client.post("/api/uploads", json={"filename": "x.avi", "size": 10}).status_code == 400
+    too_big = (main.settings.max_upload_mb + 1) * 1024 * 1024
+    assert client.post("/api/uploads", json={"filename": "x.mp4", "size": too_big}).status_code == 413
+    assert client.get("/api/uploads/not-an-id").status_code == 404
+    uid = _start_upload(client, b"0123456789")
+    # Wrong offset: 409 tells the client where to resume.
+    r = client.put(f"/api/uploads/{uid}?offset=4", content=b"abc")
+    assert r.status_code == 409 and r.json()["detail"]["received"] == 0
+    # More bytes than declared.
+    assert client.put(f"/api/uploads/{uid}?offset=0", content=b"x" * 11).status_code == 400
+    # Finishing an incomplete upload.
+    assert client.post(f"/api/uploads/{uid}/finish", json={}).status_code == 409
+
+
+def test_chunked_upload_resend_is_idempotent(client):
+    data = b"abcdefghij"
+    uid = _start_upload(client, data)
+    assert client.put(f"/api/uploads/{uid}?offset=0", content=data[:4]).json()["received"] == 4
+    # Lost response -> client re-sends the same chunk: accepted without duplicating bytes.
+    assert client.put(f"/api/uploads/{uid}?offset=0", content=data[:4]).json()["received"] == 4
+    st = client.put(f"/api/uploads/{uid}?offset=4", content=data[4:]).json()
+    assert st["received"] == 10 and st["complete"]
+    assert client.get(f"/api/uploads/{uid}").json()["complete"]
+
+
+def test_chunked_upload_invalid_video_is_cleaned_up(client):
+    data = b"garbage" * 50
+    uid = _start_upload(client, data)
+    client.put(f"/api/uploads/{uid}?offset=0", content=data)
+    before = set(p.name for p in main.settings.jobs_dir.iterdir())
+    r = client.post(f"/api/uploads/{uid}/finish", json={})
+    assert r.status_code == 400
+    assert set(p.name for p in main.settings.jobs_dir.iterdir()) == before
+    assert client.get(f"/api/uploads/{uid}").status_code == 404
+
+
+@needs_ffmpeg
+def test_chunked_upload_full_flow(client, sample_mp4):
+    data = sample_mp4.read_bytes()
+    uid = _start_upload(client, data, "bài giảng chia phần.mp4")
+    step = max(1, len(data) // 3)
+    offset = 0
+    while offset < len(data):
+        r = client.put(f"/api/uploads/{uid}?offset={offset}", content=data[offset:offset + step])
+        assert r.status_code == 200, r.text
+        offset = r.json()["received"]
+    r = client.post(f"/api/uploads/{uid}/finish", json={"title": "Chia phần", "language": "vi", "slide_count": 6})
+    assert r.status_code == 202, r.text
+    job = _wait(client, r.json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert job["result"]["title"] == "Chia phần"
+    assert client.get(f"/api/uploads/{uid}").status_code == 404  # moved into the job folder
+
+
+def test_youtube_block_suggests_studio_download_and_upload():
+    from app.url_import.errors import UPLOAD_HINT, fallback_hint
+
+    assert "YouTube Studio" in fallback_hint("youtube", "bot_check")
+    assert fallback_hint("facebook", "bot_check") == UPLOAD_HINT
+    assert fallback_hint("youtube", "too_long") == UPLOAD_HINT

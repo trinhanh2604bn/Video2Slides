@@ -37,9 +37,14 @@ Sau đó chạy lại lệnh deploy để container nhận giá trị mới.
 
 ## Giới hạn cần biết
 
-- Modal giới hạn mỗi request web **150 giây**: video tải lên trực tiếp phải upload xong trong thời gian đó
-  (mạng chậm + video lớn sẽ lỗi). Video dài nên dùng nhập bằng link YouTube/Facebook.
-- YouTube có thể chặn tải từ IP của máy chủ cloud.
+- Modal giới hạn mỗi request web **150 giây**. Vì vậy trình duyệt gửi video theo **từng phần nhỏ**
+  (`POST /api/uploads` → nhiều `PUT /api/uploads/{id}?offset=…` → `POST /api/uploads/{id}/finish`); kích thước mỗi
+  phần tự điều chỉnh theo tốc độ mạng (~30 giây/phần), phần lỗi được gửi lại và tiếp tục từ byte máy chủ đã nhận.
+  Nhờ đó video lớn trên mạng chậm vẫn tải lên được; chỉ cần giữ trang mở tới khi xong. Phiên tải dở bị xóa sau 24 giờ.
+- YouTube thường chặn tải video từ IP của máy chủ cloud (lỗi "xác minh chống bot"). Ứng dụng **không** vượt qua
+  bước chặn này (không dùng cookie tài khoản hay proxy). Khi bị chặn, thông báo lỗi hướng dẫn chủ video tải MP4
+  trong YouTube Studio rồi dùng **Tải tệp lên**, kèm nút chuyển thẳng sang tab tải tệp. Nhập link vẫn hoạt động
+  bình thường khi chạy ứng dụng trên máy cá nhân (`start.bat`).
 - Google Slides: xem mục bên dưới.
 
 ## Google Slides trên Modal

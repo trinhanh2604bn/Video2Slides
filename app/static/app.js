@@ -580,44 +580,100 @@ function followJob(jobId) {
 }
 
 // ------------------------------------------------------------------ upload
-function upload(ev) {
+// The file goes up in small PUTs: a hosted web request is time-limited (Modal: 150 s), so one big POST fails
+// on a slow connection. Chunk size adapts to the measured speed (~CHUNK_TARGET_SEC per request) and a failed
+// chunk is retried from the byte count the server reports.
+const CHUNK_MIN = 1 << 20, CHUNK_START = 4 << 20, CHUNK_TARGET_SEC = 30, CHUNK_RETRIES = 6;
+
+async function upload(ev) {
   ev.preventDefault();
   if (state.mode === "url") { importUrl(); return; }
   if (!state.file) return;
+  const file = state.file;
   state.source = { type: "upload" };
   const opts = commonOptions();
   store.set("googleAuto", opts.google_slides ? "1" : "0");
-  const fd = new FormData();
-  fd.append("file", state.file);
-  for (const [k, v] of Object.entries(opts)) fd.append(k, typeof v === "boolean" ? String(v) : v);
   useStages(opts.ai_images, opts.google_slides);
 
   showView("processView");
   $("processTitle").textContent = "Đang xử lý video";
-  $("processFile").textContent = state.file.name;
+  $("processFile").textContent = file.name;
   $("processError").hidden = true;
   renderStages("uploading");
 
-  // XHR gives real byte-level upload progress (fetch does not).
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/jobs");
-  for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
-  xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) setStageMeta("uploading", `${Math.floor((e.loaded / e.total) * 100)}%`);
-  };
-  xhr.upload.onload = () => setStageMeta("uploading", "đang kiểm tra tệp…");
-  xhr.onload = () => {
-    let body = {};
-    try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-    if (xhr.status === 401) { showView("authView"); return; }
-    if (xhr.status !== 202) {
-      showError(body.detail && typeof body.detail === "string" ? body.detail : `Tải lên thất bại (HTTP ${xhr.status}).`, false);
-      return;
-    }
+  try {
+    const start = await (await postJson("/api/uploads", { filename: file.name, size: file.size })).json();
+    await sendChunks(file, start);
+    setStageMeta("uploading", "đang kiểm tra tệp…");
+    const body = await (await postJson(`/api/uploads/${start.upload_id}/finish`, opts)).json();
     followJob(body.job_id);
-  };
-  xhr.onerror = () => showError("Mất kết nối khi tải lên. Vui lòng thử lại.", false);
-  xhr.send(fd);
+  } catch (e) {
+    if ($("authView").hidden) showError(e.message, false);  // a 401 already switched to the password view
+  }
+}
+
+async function sendChunks(file, start) {
+  const maxChunk = start.max_chunk_bytes || 64 << 20;
+  let offset = start.received || 0, size = CHUNK_START, failures = 0;
+  while (offset < file.size) {
+    const end = Math.min(file.size, offset + size);
+    const t0 = performance.now();
+    let res;
+    try {
+      res = await putChunk(start.upload_id, offset, file.slice(offset, end), file.size);
+    } catch (netErr) {
+      res = { status: 0 };
+    }
+    if (res.status === 401) { showView("authView"); throw new Error("auth"); }
+    if (res.status === 200) {
+      const bps = (end - offset) / Math.max(0.5, (performance.now() - t0) / 1000);
+      offset = res.body.received;
+      failures = 0;
+      // Aim for ~CHUNK_TARGET_SEC per request, well under the 150 s limit.
+      size = Math.max(CHUNK_MIN, Math.min(maxChunk, Math.round((bps * CHUNK_TARGET_SEC) / CHUNK_MIN) * CHUNK_MIN));
+      continue;
+    }
+    if (res.status === 409 && res.body && res.body.detail && typeof res.body.detail.received === "number") {
+      offset = res.body.detail.received;  // server already has more/less: resume from there
+      continue;
+    }
+    if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+      throw new Error(typeof res.body?.detail === "string" ? res.body.detail : `Tải lên thất bại (HTTP ${res.status}).`);
+    }
+    // Network error, timeout or 5xx: smaller chunk, back off, then ask the server where to resume.
+    if (++failures > CHUNK_RETRIES) throw new Error("Mất kết nối khi tải lên. Vui lòng kiểm tra mạng và thử lại.");
+    size = Math.max(CHUNK_MIN, Math.floor(size / 2));
+    setStageMeta("uploading", `${Math.floor((offset / file.size) * 100)}% · mạng chập chờn, thử lại (${failures}/${CHUNK_RETRIES})…`);
+    await new Promise((r) => setTimeout(r, Math.min(30000, 2000 * 2 ** (failures - 1))));
+    try {
+      const st = await (await api(`/api/uploads/${start.upload_id}`)).json();
+      offset = st.received;
+    } catch (e) {
+      if (/hết hạn/.test(e.message)) throw e;
+    }
+  }
+}
+
+// One chunk via XHR (byte-level progress; fetch has none). Resolves with {status, body}; rejects on network error.
+function putChunk(uploadId, offset, blob, total) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", `/api/uploads/${uploadId}?offset=${offset}`);
+    for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.timeout = 140000;  // just under the hosting limit, so a stalled chunk is retried instead of hanging
+    xhr.upload.onprogress = (e) => {
+      setStageMeta("uploading", `${Math.floor(((offset + e.loaded) / total) * 100)}% · ${fmtSize(offset + e.loaded)} / ${fmtSize(total)}`);
+    };
+    xhr.onload = () => {
+      let body = {};
+      try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      resolve({ status: xhr.status, body });
+    };
+    xhr.onerror = () => reject(new Error("network"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
+    xhr.send(blob);
+  });
 }
 
 // ------------------------------------------------------------------ progress
@@ -805,6 +861,10 @@ function showError(message, canRetry, cancelled = false) {
   $("processTitle").textContent = cancelled ? "Đã hủy xử lý" : "Không thể hoàn tất";
   $("processErrorText").textContent = message;
   $("retryBtn").hidden = !canRetry;
+  // A failed link import (e.g. YouTube blocking the cloud server): offer the direct upload instead.
+  const src = (state.job && state.job.source) || state.source || {};
+  $("restartBtn").dataset.toFile = src.type === "url" ? "1" : "";
+  $("restartBtn").textContent = src.type === "url" ? "Tải tệp MP4 lên thay thế" : "Tải video khác";
   $("processError").hidden = false;
   $("queueNote").hidden = true;
 }
@@ -1422,7 +1482,11 @@ $("uploadForm").addEventListener("submit", upload);
 $("downloadBtn").addEventListener("click", () => downloadPptx());
 $("transcriptBtn").addEventListener("click", toggleTranscript);
 $("newBtn").addEventListener("click", startOver);
-$("restartBtn").addEventListener("click", startOver);
+$("restartBtn").addEventListener("click", () => {
+  const toFile = $("restartBtn").dataset.toFile === "1";
+  startOver();
+  if (toFile) setMode("file");
+});
 $("retryBtn").addEventListener("click", retry);
 $("cancelBtn").addEventListener("click", cancelJob);
 $("previewPrev").addEventListener("click", () => showSlide(preview.index - 1));

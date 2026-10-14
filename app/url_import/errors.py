@@ -7,6 +7,21 @@ signed media URLs or internal details. They are mapped to these codes instead.
 from __future__ import annotations
 
 UPLOAD_HINT = "Bạn có thể tải tệp MP4 lên trực tiếp thay thế."
+# YouTube often refuses downloads from datacenter IPs (cloud hosting). The legitimate path for the video's
+# owner is the MP4 download in YouTube Studio, then a (chunked, so size is no problem) direct upload.
+YOUTUBE_BLOCKED_HINT = ("YouTube thường chặn tải video từ máy chủ đám mây. Nếu bạn là chủ video, hãy tải bản MP4 trong "
+                        "YouTube Studio (Nội dung → ⋮ → Tải xuống) rồi dùng mục \"Tải tệp lên\": tệp lớn được gửi "
+                        "theo từng phần nên không bị giới hạn thời gian.")
+YOUTUBE_BLOCKED_CODES = frozenset({"bot_check", "login_required", "rate_limited", "network_error", "download_failed",
+                                   "extraction_failed"})
+
+
+def fallback_hint(platform: str | None, code: str | None) -> str:
+    """What the user can do instead when an import fails."""
+    if platform == "youtube" and code in YOUTUBE_BLOCKED_CODES:
+        return YOUTUBE_BLOCKED_HINT
+    return UPLOAD_HINT
+
 
 MESSAGES: dict[str, str] = {
     "invalid_url": "Đường dẫn không hợp lệ. Hãy dán một liên kết video YouTube hoặc Facebook đầy đủ.",
