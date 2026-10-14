@@ -96,6 +96,7 @@ tests/                      pytest suite
 | `GET` | `/api/jobs/{id}/download.pdf` | vector PDF, one 960×540 pt page per slide (text kept as text, fonts embedded); rendered on demand by PowerPoint/LibreOffice and cached until the deck changes |
 | `GET` | `/api/jobs/{id}/figma.zip` | one SVG per slide for Figma Design (which cannot import PDF): live `<text>` layers, vector shapes, embedded pictures; PDF → SVG with PyMuPDF (AGPL), cached (`app/figma_export.py`) |
 | `GET` | `/api/jobs/{id}/figma/{n}.svg` | one slide's SVG (the UI copies it for Ctrl+V into Figma) |
+| `GET` | `/api/jobs/{id}/figma/all.svg` | every slide in one SVG grid (4 columns, one clipped group per slide, ids prefixed per slide) for a single Ctrl+V |
 | `DELETE` | `/api/jobs/{id}` | delete a finished job and its files |
 | `GET` | `/api/jobs/{id}/illustrations` | per-slide illustration status |
 | `GET` | `/api/jobs/{id}/illustrations/{slide_id}.jpg` | one generated illustration |

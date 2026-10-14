@@ -67,6 +67,8 @@ thành layer sửa được (chữ là text thật, hình là vector, ảnh gi�
 - **Tải cho Figma (SVG)**: tệp .zip, mỗi slide một tệp `slide-01.svg`, `slide-02.svg`… Giải nén, chọn tất
   cả tệp SVG rồi kéo thả vào Figma: mỗi slide thành một frame 960×540.
 - **Sao chép slide cho Figma** (ở khung Xem trước): sao chép slide đang xem, mở Figma và bấm Ctrl+V.
+- **Sao chép tất cả slide**: sao chép cả bộ, xếp thành lưới 4 cột, mỗi slide một nhóm `Slide-01`, `Slide-02`…
+  Dán vào Figma bằng Ctrl+V. Muốn mỗi slide thành frame riêng: chọn các nhóm rồi bấm Ctrl+Alt+G (*Frame selection*).
 - Nếu máy chưa cài font của chủ đề (Calibri, Cambria, Segoe UI), Figma sẽ báo thiếu font và cho chọn font
   thay thế. Muốn làm cả bộ trong **Figma Slides**, có thể nhập thẳng tệp .pptx (Figma đổi font sang Inter).
 - Lần đầu mất vài giây để xuất; các lần sau dùng lại bản đã xuất cho tới khi slide được sửa.

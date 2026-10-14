@@ -79,6 +79,39 @@ def render_svgs(job_dir: Path, pptx: Path) -> list[Path]:
         return sorted(svg_dir(job_dir).glob("slide-*.svg"))
 
 
+COLUMNS = 4   # slides per row when the whole deck is pasted at once
+GAP = 80      # px between slides, like a Figma slide grid
+
+_SVG_OPEN = re.compile(r"<svg\b[^>]*>")
+_REFS = re.compile(r'(\bid="|url\(#|href="#)([^")]+)')
+
+
+def combined_svg(files: list[Path]) -> str:
+    """Every slide in one SVG, laid out in a grid with one group per slide (named Slide-01, Slide-02 ... in
+    Figma's layer panel), so a single Ctrl+V brings the whole deck into Figma. Each slide's ids are prefixed
+    because MuPDF numbers clip paths from 1 on every page."""
+    w, h = 960.0, 540.0
+    parts = []
+    for i, f in enumerate(files):
+        svg = f.read_text(encoding="utf-8")
+        head = _SVG_OPEN.search(svg)
+        if head and (m := re.search(r'viewBox="[-\d.]+ [-\d.]+ ([\d.]+) ([\d.]+)"', head.group(0))):
+            w, h = float(m.group(1)), float(m.group(2))
+        body = svg[head.end():svg.rfind("</svg>")] if head else svg
+        prefix = f"s{i + 1:02d}-"
+        body = _REFS.sub(lambda m: m.group(1) + prefix + m.group(2), body)
+        x, y = (i % COLUMNS) * (w + GAP), (i // COLUMNS) * (h + GAP)
+        # Clip to the slide: shapes bleeding off the edge were hidden by each file's own viewBox.
+        parts.append(f'<g id="Slide-{i + 1:02d}" transform="translate({x:g} {y:g})">'
+                     f'<defs><clipPath id="{prefix}slide"><rect width="{w:g}" height="{h:g}"/></clipPath></defs>'
+                     f'<g clip-path="url(#{prefix}slide)">{body}</g></g>')
+    cols = min(COLUMNS, len(files)) or 1
+    rows = -(-len(files) // COLUMNS) or 1
+    tw, th = cols * w + (cols - 1) * GAP, rows * h + (rows - 1) * GAP
+    return ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" '
+            f'width="{tw:g}" height="{th:g}" viewBox="0 0 {tw:g} {th:g}">\n' + "\n".join(parts) + "\n</svg>\n")
+
+
 def render_zip(job_dir: Path, pptx: Path) -> Path:
     """All slide SVGs in one ZIP (cached next to them)."""
     files = render_svgs(job_dir, pptx)

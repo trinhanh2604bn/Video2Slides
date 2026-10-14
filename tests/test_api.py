@@ -277,6 +277,27 @@ def test_figma_svg_export(client, sample_mp4, monkeypatch):
     one = client.get(f"/api/jobs/{job_id}/figma/2.svg")
     assert one.status_code == 200 and one.text == "<svg>2</svg>"
     assert client.get(f"/api/jobs/{job_id}/figma/3.svg").status_code == 404
+    every = client.get(f"/api/jobs/{job_id}/figma/all.svg")
+    assert every.status_code == 200 and every.text.count('<g id="Slide-') == 2
+
+
+def test_figma_all_slides_grid_has_unique_ids(tmp_path):
+    from xml.dom import minidom
+    from app.figma_export import COLUMNS, GAP, combined_svg
+
+    slide = ('<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540"><defs>'
+             '<clipPath id="clip_1"><path d="M0 0H960V540H0Z"/></clipPath></defs>'
+             '<g clip-path="url(#clip_1)"><text><tspan x="1" y="2">Xin chào</tspan></text></g></svg>')
+    files = []
+    for i in range(1, COLUMNS + 2):
+        f = tmp_path / f"slide-{i:02d}.svg"
+        f.write_text(slide, encoding="utf-8")
+        files.append(f)
+    out = combined_svg(files)
+    minidom.parseString(out.encode("utf-8"))  # well-formed
+    assert out.count('id="s01-clip_1"') == 1 and 'url(#s05-clip_1)' in out
+    assert f'width="{COLUMNS * 960 + (COLUMNS - 1) * GAP}"' in out and f'height="{2 * 540 + GAP}"' in out
+    assert f'id="Slide-05" transform="translate(0 {540 + GAP})"' in out
 
 
 def test_figma_svg_keeps_one_x_per_line():

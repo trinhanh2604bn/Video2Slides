@@ -672,6 +672,18 @@ def download_figma(job_id: str):
     return FileResponse(path, media_type="application/zip", filename=f"{stem} - Figma.zip")
 
 
+@app.get("/api/jobs/{job_id}/figma/all.svg", dependencies=[Depends(require_access)])
+def figma_all_slides(job_id: str):
+    """Every slide in one SVG grid (one group per slide): a single Ctrl+V brings the whole deck into Figma."""
+    _, d, pptx = _figma_source(job_id)
+    try:
+        files = figma_export.render_svgs(d, pptx)
+    except figma_export.FigmaExportError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(figma_export.combined_svg(files), media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/jobs/{job_id}/figma/{number}.svg", dependencies=[Depends(require_access)])
 def figma_slide(job_id: str, number: int):
     """One slide as SVG markup (the UI copies it to the clipboard for Ctrl+V into Figma)."""

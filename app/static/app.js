@@ -1192,7 +1192,7 @@ async function loadPreview() {
   $("previewStrip").innerHTML = "";
   $("previewStage").hidden = true;
   $("previewCounter").textContent = "";
-  $("copyFigmaBtn").hidden = true;
+  $("copyFigmaBtn").hidden = $("copyFigmaAllBtn").hidden = true;
   $("previewNote").textContent = "Đang tạo ảnh xem trước…";
   $("previewNote").hidden = false;
   card.hidden = false;
@@ -1208,7 +1208,7 @@ async function loadPreview() {
     return;
   }
   preview.urls = data.slides;
-  $("copyFigmaBtn").hidden = !navigator.clipboard;
+  $("copyFigmaBtn").hidden = $("copyFigmaAllBtn").hidden = !navigator.clipboard;
   $("previewNote").hidden = true;
   $("previewStage").hidden = false;
   const strip = $("previewStrip");
@@ -1320,15 +1320,16 @@ async function downloadFigma(jobId = state.jobId) {
     "Đang xuất cho Figma…");
 }
 
-// Figma turns pasted SVG markup into editable layers, so one slide goes straight from here to the canvas.
-async function copySlideForFigma() {
-  const btn = $("copyFigmaBtn");
+// Figma turns pasted SVG markup into editable layers, so slides go straight from here to the canvas.
+// all=true copies the whole deck as one grid (one group per slide).
+async function copyForFigma(all = false) {
+  const btn = $(all ? "copyFigmaAllBtn" : "copyFigmaBtn");
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Đang chuẩn bị…";
   try {
     const n = preview.index + 1;
-    const svg = api(`/api/jobs/${state.jobId}/figma/${n}.svg`).then((r) => r.text());
+    const svg = api(`/api/jobs/${state.jobId}/figma/${all ? "all" : n}.svg`).then((r) => r.text());
     // Hand the clipboard a promise inside the click: the export may take seconds, longer than the browser
     // keeps the click's permission to write the clipboard.
     if (window.ClipboardItem && navigator.clipboard.write) {
@@ -1337,7 +1338,8 @@ async function copySlideForFigma() {
     } else {
       await navigator.clipboard.writeText(await svg);
     }
-    toast(`Đã sao chép slide ${n}. Mở Figma và bấm Ctrl+V để dán.`);
+    toast(all ? `Đã sao chép ${preview.urls.length} slide. Mở Figma và bấm Ctrl+V để dán.`
+      : `Đã sao chép slide ${n}. Mở Figma và bấm Ctrl+V để dán.`);
   } catch (e) {
     toast(e.name === "NotAllowedError"
       ? "Trình duyệt chặn sao chép. Hãy dùng nút Tải cho Figma (SVG) rồi kéo thả tệp vào Figma."
@@ -2349,7 +2351,8 @@ $("uploadForm").addEventListener("submit", upload);
 $("downloadBtn").addEventListener("click", () => downloadPptx());
 $("downloadPdfBtn").addEventListener("click", () => downloadPdf());
 $("downloadFigmaBtn").addEventListener("click", () => downloadFigma());
-$("copyFigmaBtn").addEventListener("click", copySlideForFigma);
+$("copyFigmaBtn").addEventListener("click", () => copyForFigma());
+$("copyFigmaAllBtn").addEventListener("click", () => copyForFigma(true));
 $("transcriptBtn").addEventListener("click", toggleTranscript);
 $("newBtn").addEventListener("click", startOver);
 $("restartBtn").addEventListener("click", () => {
