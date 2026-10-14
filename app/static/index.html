@@ -123,6 +123,7 @@
           <strong>Kéo thả video vào đây</strong>
           <span>hoặc <u>chọn tệp từ máy</u></span>
           <small id="limitsText"></small>
+          <small class="paste-tip" id="pasteTip" hidden>Mẹo: có liên kết YouTube/Facebook? Chỉ cần dán (Ctrl+V) ở bất kỳ đâu trên trang.</small>
         </label>
 
         <div class="file-info" id="fileInfo" hidden>
@@ -247,7 +248,7 @@
         </div>
 
         <div class="actions">
-          <p class="actions-note">Tệp PowerPoint (.pptx) luôn được tạo; Google Slides là tùy chọn.</p>
+          <p class="actions-note" id="actionsNote" aria-live="polite">Chọn một video ở bước 01 để bắt đầu.</p>
           <button class="btn primary lg btn-arrow" type="submit" id="submitBtn" disabled>Tạo bài trình chiếu</button>
         </div>
       </form>
@@ -255,15 +256,27 @@
 
     <!-- Processing -->
     <section id="processView" class="card process" hidden>
-      <p class="step-label">Tiến trình</p>
-      <h2 id="processTitle" class="card-title">Đang xử lý video</h2>
-      <p class="muted process-file" id="processFile"></p>
+      <div class="process-head">
+        <div>
+          <p class="step-label">Tiến trình</p>
+          <h2 id="processTitle" class="card-title">Đang xử lý video</h2>
+          <p class="muted process-file" id="processFile"></p>
+        </div>
+        <div class="elapsed" id="processElapsed" hidden>
+          <span class="elapsed-label">Đã chạy</span>
+          <span class="elapsed-time" id="processElapsedTime" aria-hidden="true">00:00</span>
+        </div>
+      </div>
       <ol class="stages" id="stageList" aria-live="polite"></ol>
       <div class="progress" id="stageProgress" hidden>
         <div class="progress-bar"><span id="stageProgressFill"></span></div>
         <span class="muted small" id="stageProgressText"></span>
       </div>
       <p class="muted small queue-note" id="queueNote" hidden></p>
+      <div class="away" id="awayNote" hidden>
+        <p><strong>Không cần ngồi chờ.</strong> <span id="awayText">Bạn có thể đóng tab này — máy chủ vẫn tiếp tục xử lý. Mở lại trang hoặc vào “Bài đã tạo” để xem kết quả.</span></p>
+        <button type="button" class="btn ghost small-btn" id="notifyBtn" hidden>Báo cho tôi khi xong</button>
+      </div>
       <div class="row" id="cancelRow">
         <button class="btn ghost" id="cancelBtn" type="button">Hủy xử lý</button>
       </div>
@@ -366,6 +379,11 @@
           </div>
           <div class="reader-progress" aria-hidden="true"><span id="readerProgress"></span></div>
           <div class="preview-strip reader-strip" id="readerStrip" role="list" aria-label="Danh sách slide"></div>
+          <p class="reader-keys muted small" aria-hidden="true">
+            <span><kbd>←</kbd><kbd>→</kbd> chuyển slide</span>
+            <span><kbd>F</kbd> toàn màn hình</span>
+            <span><kbd>Esc</kbd> quay lại</span>
+          </p>
         </div>
         <article class="reader-notes" id="readerNotes" tabindex="0" aria-live="polite"></article>
       </div>
@@ -381,8 +399,20 @@
           </div>
           <button type="button" class="btn ghost" id="libraryClose">Tạo bài mới</button>
         </div>
+        <div class="library-tools" id="libraryTools" hidden>
+          <div class="input-icon library-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <label class="sr-only" for="librarySearch">Tìm bài trình chiếu</label>
+            <input id="librarySearch" type="search" autocomplete="off" placeholder="Tìm theo tiêu đề…">
+          </div>
+          <span class="muted small counter" id="libraryCount" aria-live="polite"></span>
+        </div>
         <p class="muted small" id="libraryNote"></p>
         <ul class="library-list" id="libraryList"></ul>
+        <div class="library-empty" id="libraryEmpty" hidden>
+          <p>Chưa có bài trình chiếu nào. Bài đầu tiên chỉ cách bạn một video.</p>
+          <button type="button" class="btn primary btn-arrow" id="libraryStart">Tạo bài đầu tiên</button>
+        </div>
       </div>
     </section>
   </main>
@@ -408,7 +438,15 @@
     </form>
   </dialog>
 
-  <footer class="foot muted small">Video được xử lý trên máy của bạn và tự động xóa sau khi hoàn tất. Chỉ xử lý nội dung bạn sở hữu hoặc được phép sử dụng.
+  <!-- Whole-page drop target while a file is dragged over the upload view -->
+  <div class="drop-overlay" id="dropOverlay" hidden aria-hidden="true">
+    <div class="drop-overlay-inner">
+      <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <strong>Thả video MP4 để bắt đầu</strong>
+    </div>
+  </div>
+
+  <footer class="foot muted small"><span id="footText">Video được xử lý trên máy của bạn và tự động xóa sau khi hoàn tất.</span> Chỉ xử lý nội dung bạn sở hữu hoặc được phép sử dụng.
     · <a href="privacy.html">Quyền riêng tư</a> · <a href="terms.html">Điều khoản</a></footer>
   <script src="app.js"></script>
 </body>

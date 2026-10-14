@@ -88,7 +88,9 @@ def recent(limit: int = 20) -> list[dict[str, Any]]:
     out = []
     for r in rows:
         g = json.loads(r["google_json"]) if r["google_json"] else None
+        src = json.loads(r["source"]) if r["source"] else {}
         out.append({
+            "platform": src.get("platform"),
             "job_id": r["job_id"], "title": r["title"], "created_at": r["created_at"],
             "language": r["language"], "style": r["style"], "layout_mode": r["layout_mode"],
             "slide_count": r["slide_count"], "google_url": g.get("url") if g else None,

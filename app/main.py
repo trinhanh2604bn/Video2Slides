@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 from collections import deque
@@ -624,11 +625,18 @@ def download(job_id: str):
 
 @app.delete("/api/jobs/{job_id}", dependencies=[Depends(require_access)], status_code=204)
 def delete_job(job_id: str):
-    job = _load_job(job_id)
-    if job["status"] in ("running", "downloading"):
+    try:
+        job = jobs.load(job_id)
+    except jobs.JobNotFound:
+        job = None  # the job folder may already be cleaned up while the library entry remains
+    if job is None and library.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy công việc.")
+    if job and job["status"] in ("running", "downloading"):
         raise HTTPException(status_code=409, detail="Công việc đang chạy, không thể xóa.")
-    jobs.delete(job_id)
+    if job:
+        jobs.delete(job_id)
     library.delete(job_id)
+    shutil.rmtree(settings.data_dir / "library" / job_id, ignore_errors=True)  # cached Google thumbnails
     return Response(status_code=204)
 
 
@@ -877,7 +885,22 @@ def reading(job_id: str) -> dict:
         "job_id": job_id, "title": pres.presentation_title, "language": pres.language,
         "slide_count": len(slides), "image_source": source, "slides": slides,
         "google_url": (gmeta or {}).get("url"), "pptx_available": pptx.exists(),
+        "source_url": _youtube_source_url(job_id),
     }
+
+
+def _youtube_source_url(job_id: str) -> str | None:
+    """Original YouTube link of a URL import, so Reading Mode timestamps can open the video at that moment."""
+    src: dict = {}
+    try:
+        if (jobs.job_dir(job_id) / "job.json").exists():
+            src = jobs.load(job_id).get("source") or {}
+    except jobs.JobNotFound:
+        pass
+    if not src:
+        src = (library.get(job_id) or {}).get("source") or {}
+    url = src.get("url")
+    return url if src.get("platform") == "youtube" and isinstance(url, str) and url.startswith("https://") else None
 
 
 @app.get("/api/jobs/{job_id}/google/thumbnail/{number}.png", dependencies=[Depends(require_access)])

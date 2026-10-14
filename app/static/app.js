@@ -162,6 +162,7 @@ function showView(id) {
   const changed = $(id).hidden;
   for (const v of VIEWS) $(v).hidden = v !== id;
   document.body.classList.toggle("wide", id === "readingView");
+  if (id !== "processView") { stopClock(); setTabTitle(""); }
   if (id !== "readingView" && document.fullscreenElement) document.exitFullscreen().catch(() => {});
   if (changed) window.scrollTo(0, 0);
 }
@@ -177,6 +178,12 @@ function fmtDuration(sec) {
 function fmtClock(sec) {
   const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+function fmtRemaining(sec) {
+  if (!isFinite(sec)) return "—";
+  if (sec < 60) return "dưới 1 phút";
+  if (sec < 3600) return `~${Math.ceil(sec / 60)} phút`;
+  return `~${Math.floor(sec / 3600)} giờ ${Math.round((sec % 3600) / 60)} phút`;
 }
 function fmtDate(ts) {
   try { return new Date(ts * 1000).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }); } catch { return ""; }
@@ -205,6 +212,7 @@ async function init() {
 
   const ui = c.url_import || { enabled: false };
   $("sourceTabs").hidden = !ui.enabled;
+  $("pasteTip").hidden = !ui.enabled;
   if (ui.enabled) $("urlLimits").textContent = `${Math.round(ui.max_duration_sec / 60)} phút, ${ui.max_download_mb} MB`;
 
   setupAiImages(c.ai_images || {});
@@ -235,8 +243,37 @@ async function init() {
     wrap.appendChild(lab);
   }
 
+  if (c.media_processing === "modal") {
+    $("footText").textContent = "Video được xử lý trên máy chủ đám mây riêng của ứng dụng và tự động xóa sau khi hoàn tất.";
+  }
+  restorePrefs();
+  updateSubmit();
+
   if (c.password_required && !store.get("appPassword", true)) { showView("authView"); return; }
   route();
+}
+
+// Remember the last choices so a returning user only has to pick a video.
+const PREF_KEY = "prefs";
+function restorePrefs() {
+  let p;
+  try { p = JSON.parse(store.get(PREF_KEY) || "{}"); } catch { p = {}; }
+  const pick = (sel, v) => { if (v != null && [...sel.options].some((o) => o.value === v)) sel.value = v; };
+  pick($("languageSelect"), p.language);
+  pick($("imageDensity"), p.image_density);
+  for (const name of ["style", "layoutMode"]) {
+    const v = p[name === "style" ? "style" : "layout_mode"];
+    const r = v && document.querySelector(`input[name="${name}"][value="${v}"]`);
+    if (r) r.checked = true;
+  }
+  if (typeof p.ai_images === "boolean" && !$("aiImagesCheck").disabled) {
+    $("aiImagesCheck").checked = p.ai_images;
+    $("aiImagesCheck").dispatchEvent(new Event("change"));
+  }
+}
+function savePrefs(opts) {
+  const { language, style, layout_mode, image_density, ai_images } = opts;
+  store.set(PREF_KEY, JSON.stringify({ language, style, layout_mode, image_density, ai_images }));
 }
 
 function setupAiImages(ai) {
@@ -461,6 +498,16 @@ function updateSubmit() {
     ? Boolean(state.urlCheck && state.urlCheck.retrieval_permitted && $("rightsCheck").checked)
     : state.fileReady;
   $("submitBtn").disabled = !ok;
+  // Say what is still missing instead of leaving a silently disabled button.
+  let note = "Tệp PowerPoint (.pptx) luôn được tạo; Google Slides là tùy chọn.";
+  if (!ok && state.mode === "url") {
+    note = !state.urlCheck ? "Dán liên kết rồi bấm “Kiểm tra URL” để tiếp tục."
+      : state.urlCheck.retrieval_permitted ? "Đánh dấu ô xác nhận quyền sử dụng video để tiếp tục."
+        : "Liên kết này không tải được — hãy tải tệp MP4 lên thay thế.";
+  } else if (!ok) {
+    note = state.file ? "Video chưa hợp lệ — xem thông báo ở trên." : "Chọn một video ở bước 01 để bắt đầu.";
+  }
+  $("actionsNote").textContent = note;
 }
 
 // ------------------------------------------------------------------ source tabs + URL import
@@ -519,6 +566,7 @@ async function validateUrl() {
   const btn = $("validateUrlBtn");
   btn.disabled = true;
   btn.textContent = "Đang kiểm tra…";
+  $("actionsNote").textContent = "Đang kiểm tra liên kết…";
   try {
     renderUrlCheck(await (await postJson("/api/videos/url/validate", { url })).json());
   } catch (e) {
@@ -580,6 +628,7 @@ async function importUrl() {
   const info = state.urlCheck;
   if (!info || !info.retrieval_permitted || !$("rightsCheck").checked) return;
   const opts = commonOptions();
+  savePrefs(opts);
   state.source = { type: "url", platform: info.platform };
   useStages(opts.ai_images, opts.google_slides);
   showView("processView");
@@ -587,6 +636,7 @@ async function importUrl() {
   $("processFile").textContent = info.title || info.url;
   $("processError").hidden = true;
   renderStages("uploading");
+  startClock(Date.now() / 1000);
   try {
     const body = await (await postJson("/api/videos/url/import", { url: info.url, rights_confirmed: true, ...opts })).json();
     followJob(body.job_id);
@@ -616,6 +666,7 @@ async function upload(ev) {
   state.source = { type: "upload" };
   const opts = commonOptions();
   store.set("googleAuto", opts.google_slides ? "1" : "0");
+  savePrefs(opts);
   useStages(opts.ai_images, opts.google_slides);
 
   showView("processView");
@@ -623,14 +674,19 @@ async function upload(ev) {
   $("processFile").textContent = file.name;
   $("processError").hidden = true;
   renderStages("uploading");
+  startClock(Date.now() / 1000);
+  setAway("upload");
+  state.uploading = true;
 
   try {
     const start = await (await postJson("/api/uploads", { filename: file.name, size: file.size })).json();
     await sendChunks(file, start);
     setStageMeta("uploading", "đang kiểm tra tệp…");
     const body = await (await postJson(`/api/uploads/${start.upload_id}/finish`, opts)).json();
+    state.uploading = false;
     followJob(body.job_id);
   } catch (e) {
+    state.uploading = false;
     if ($("authView").hidden) showError(e.message, false);  // a 401 already switched to the password view
   }
 }
@@ -638,6 +694,7 @@ async function upload(ev) {
 async function sendChunks(file, start) {
   const maxChunk = start.max_chunk_bytes || 64 << 20;
   let offset = start.received || 0, size = CHUNK_START, failures = 0;
+  state.upRate = { t0: performance.now(), from: offset };
   while (offset < file.size) {
     const end = Math.min(file.size, offset + size);
     const t0 = performance.now();
@@ -686,7 +743,15 @@ function putChunk(uploadId, offset, blob, total) {
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.timeout = 140000;  // just under the hosting limit, so a stalled chunk is retried instead of hanging
     xhr.upload.onprogress = (e) => {
-      setStageMeta("uploading", `${Math.floor(((offset + e.loaded) / total) * 100)}% · ${fmtSize(offset + e.loaded)} / ${fmtSize(total)}`);
+      const sent = offset + e.loaded;
+      let text = `${Math.floor((sent / total) * 100)}% · ${fmtSize(sent)} / ${fmtSize(total)}`;
+      // Average speed since the upload began (smoother than per-chunk) and the time it implies.
+      const r = state.upRate, secs = r ? (performance.now() - r.t0) / 1000 : 0;
+      if (r && secs > 3 && sent > r.from) {
+        const bps = (sent - r.from) / secs;
+        text += ` · ${fmtSize(bps)}/s · còn ${fmtRemaining((total - sent) / bps)}`;
+      }
+      setStageMeta("uploading", text);
     };
     xhr.onload = () => {
       let body = {};
@@ -697,6 +762,83 @@ function putChunk(uploadId, offset, blob, total) {
     xhr.ontimeout = () => reject(new Error("timeout"));
     xhr.send(blob);
   });
+}
+
+// ------------------------------------------------------------------ progress: clock, tab title, "you can leave", notify
+const BASE_TITLE = document.title;
+
+function fmtElapsed(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const mmss = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return h ? `${h}:${mmss}` : mmss;
+}
+
+function startClock(fromTs) {
+  if (state.clockStart === fromTs && state.clockTimer) return;
+  stopClock();
+  state.clockStart = fromTs;
+  const tick = () => {
+    const sec = Date.now() / 1000 - state.clockStart;
+    $("processElapsedTime").textContent = fmtElapsed(sec);
+    $("processElapsed").setAttribute("aria-label", `Đã chạy ${fmtDuration(sec)}`);
+  };
+  tick();
+  $("processElapsed").hidden = false;
+  state.clockTimer = setInterval(tick, 1000);
+}
+
+function stopClock() {
+  clearInterval(state.clockTimer);
+  state.clockTimer = null;
+}
+
+function setAway(kind) {
+  const box = $("awayNote");
+  if (!kind) { box.hidden = true; return; }
+  $("awayText").textContent = kind === "upload"
+    ? "Giữ tab này mở cho tới khi tải lên xong. Sau đó bạn có thể đóng tab — máy chủ vẫn tiếp tục xử lý, kết quả nằm trong “Bài đã tạo”."
+    : "Bạn có thể đóng tab này — máy chủ vẫn tiếp tục xử lý. Mở lại trang hoặc vào “Bài đã tạo” để xem kết quả.";
+  box.hidden = false;
+  renderNotifyBtn();
+}
+
+function setTabTitle(prefix) {
+  document.title = prefix ? `${prefix} · ${BASE_TITLE}` : BASE_TITLE;
+}
+
+const canNotify = () => "Notification" in window && window.isSecureContext;
+function renderNotifyBtn() {
+  const b = $("notifyBtn");
+  b.hidden = !canNotify() || Notification.permission === "denied";
+  if (b.hidden) return;
+  const on = Notification.permission === "granted" && store.get("notify") === "1";
+  b.setAttribute("aria-pressed", String(on));
+  b.textContent = on ? "✓ Sẽ báo khi xong" : "Báo cho tôi khi xong";
+}
+
+async function toggleNotify() {
+  if (!canNotify()) return;
+  if (Notification.permission === "granted" && store.get("notify") === "1") store.set("notify", "0");
+  else if ((await Notification.requestPermission()) === "granted") store.set("notify", "1");
+  renderNotifyBtn();
+}
+
+// Called once when a job this tab was watching finishes: tab title, toast and (opt-in) a system notification.
+function announceDone(job, ok) {
+  const title = (job.result && job.result.title) || job.filename || "Bài trình chiếu";
+  if (document.hidden) {
+    setTabTitle(ok ? "✓ Đã xong" : "⚠ Lỗi");
+    const reset = () => { if (!document.hidden) { setTabTitle(""); document.removeEventListener("visibilitychange", reset); } };
+    document.addEventListener("visibilitychange", reset);
+  }
+  if (ok) toast(`Đã xong: ${title}`);
+  if (canNotify() && Notification.permission === "granted" && store.get("notify") === "1" && document.hidden) {
+    try {
+      const n = new Notification(ok ? "Bài trình chiếu đã sẵn sàng" : "Không thể hoàn tất bài trình chiếu", { body: title, tag: job.id });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch { /* some browsers only allow notifications from a service worker */ }
+  }
 }
 
 // ------------------------------------------------------------------ progress
@@ -755,18 +897,30 @@ async function poll() {
   const times = { ...(job.stage_times || {}) };
   if (times.downloading) times.uploading = times.downloading;
 
+  const watched = state.watching === job.id;
   if (job.status === "done") {
+    state.watching = null;
+    stopClock();
     renderStages("completed");
     showResult(job);
+    if (watched) announceDone(job, true);
     return;
   }
   if (job.status === "failed" || job.status === "cancelled") {
+    state.watching = null;
+    stopClock();
     renderStages(stage, true, times);
     showError(job.error || "Đã xảy ra lỗi.", true, job.status === "cancelled");
+    if (watched && job.status === "failed") announceDone(job, false);
     return;
   }
+  state.watching = job.id;
   showView("processView");
   $("processError").hidden = true;
+  startClock(job.created_at || Date.now() / 1000);
+  setAway("server");
+  const si = STAGES.findIndex(([k]) => k === stage);
+  setTabTitle(si >= 0 ? `(${si + 1}/${STAGES.length - 1}) ${STAGES[si][1]}` : "Đang xử lý");
   $("cancelRow").hidden = job.status === "downloading";
   $("cancelBtn").disabled = Boolean(job.cancel_requested);
   $("cancelBtn").textContent = job.cancel_requested ? "Đang hủy…" : "Hủy xử lý";
@@ -879,6 +1033,9 @@ async function cancelJob() {
 
 function showError(message, canRetry, cancelled = false) {
   showView("processView");
+  stopClock();
+  setAway(null);
+  setTabTitle("");
   $("cancelRow").hidden = true;
   $("stageProgress").hidden = true;
   $("processTitle").textContent = cancelled ? "Đã hủy xử lý" : "Không thể hoàn tất";
@@ -1183,6 +1340,7 @@ async function toggleTranscript() {
 
 function startOver() {
   clearTimeout(state.pollTimer);
+  state.watching = null;
   clearTimeout(state.googleTimer);
   state.jobId = null;
   state.job = null;
@@ -1346,7 +1504,13 @@ function renderReaderNotes(s, n) {
   box.innerHTML = "";
   const rn = s.reading_notes || {};
   const terms = keyTerms(s);
-  box.appendChild(el("p", "rn-kicker", `Slide ${n + 1}`));
+  const head = el("div", "rn-head");
+  const copy = el("button", "btn ghost rn-copy", "Sao chép");
+  copy.type = "button";
+  copy.title = "Sao chép tiêu đề và phần giải thích của slide này";
+  copy.addEventListener("click", () => copyNotes(s, n, copy));
+  head.append(el("p", "rn-kicker", `Slide ${n + 1}`), copy);
+  box.appendChild(head);
   box.appendChild(el("h2", null, s.title));
 
   const main = rn.summary || s.brief_explanation;
@@ -1375,8 +1539,22 @@ function renderReaderNotes(s, n) {
   if (s.source_timestamps && s.source_timestamps.length) {
     box.appendChild(el("h3", null, "Thời điểm trong video gốc"));
     const times = el("div", "rn-times");
+    const src = reader.data.source_url;
     for (const r of s.source_timestamps) {
-      times.appendChild(el("span", null, r.end > r.start ? `${fmtClock(r.start)} – ${fmtClock(r.end)}` : fmtClock(r.start)));
+      const label = r.end > r.start ? `${fmtClock(r.start)} – ${fmtClock(r.end)}` : fmtClock(r.start);
+      if (src) {
+        // Open the original YouTube video at this moment.
+        const a = el("a", null, label);
+        const u = new URL(src);
+        u.searchParams.set("t", `${Math.floor(r.start)}s`);
+        a.href = u.toString();
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.title = "Mở video gốc tại thời điểm này";
+        times.appendChild(a);
+      } else {
+        times.appendChild(el("span", null, label));
+      }
     }
     box.appendChild(times);
   }
@@ -1386,6 +1564,27 @@ function renderReaderNotes(s, n) {
     box.appendChild(d);
   }
   box.scrollTop = 0;
+}
+
+function notesAsText(s, n) {
+  const rn = s.reading_notes || {};
+  const out = [`Slide ${n + 1}: ${s.title}`];
+  const main = rn.summary || s.brief_explanation;
+  if (main) out.push("", main);
+  if (rn.detailed_explanation) out.push("", rn.detailed_explanation.trim());
+  if (rn.examples && rn.examples.length) out.push("", "Ví dụ:", ...rn.examples.map((e) => `- ${e}`));
+  if (rn.key_takeaway) out.push("", `Điều cần nhớ: ${rn.key_takeaway}`);
+  return out.join("\n");
+}
+
+async function copyNotes(s, n, btn) {
+  try {
+    await navigator.clipboard.writeText(notesAsText(s, n));
+    btn.textContent = "✓ Đã chép";
+  } catch {
+    btn.textContent = "Không chép được";
+  }
+  setTimeout(() => { btn.textContent = "Sao chép"; }, 1800);
 }
 
 function closeReader() {
@@ -1450,34 +1649,91 @@ async function openLibrary(push = true) {
     $("libraryNote").textContent = e.message;
     return;
   }
-  $("libraryNote").textContent = data.items.length
-    ? "Mở lại bài cũ ở Chế độ đọc, trong Google Slides hoặc tải lại tệp PowerPoint."
-    : "Chưa có bài trình chiếu nào. Hãy tạo bài đầu tiên.";
-  for (const it of data.items) {
+  library.items = data.items;
+  const has = data.items.length > 0;
+  $("libraryTools").hidden = !has;
+  $("libraryEmpty").hidden = has;
+  $("libraryNote").textContent = has ? "Mở lại bài cũ ở Chế độ đọc, trong Google Slides hoặc xem chi tiết để tải lại tệp PowerPoint." : "";
+  $("libraryNote").hidden = !has;
+  // A job still running in this browser: offer the way back to its progress instead of losing it.
+  const j = state.job;
+  if (j && ["queued", "running", "downloading"].includes(j.status)) {
+    const li = el("li", "lib-running");
+    const meta = el("div", "lib-meta");
+    meta.append(el("strong", null, j.filename || "Video đang xử lý"), el("span", "muted small", "Đang xử lý…"));
+    const actions = el("div", "lib-actions");
+    actions.appendChild(googleButton("Xem tiến trình", true, () => {
+      history.replaceState(null, "", `#job=${j.id}`);
+      state.jobId = j.id;
+      poll();
+    }));
+    li.append(el("span", "lib-num", "··"), meta, actions);
+    list.appendChild(li);
+  }
+  renderLibraryItems();
+}
+
+const library = { items: [] };
+
+function renderLibraryItems() {
+  const list = $("libraryList");
+  for (const li of [...list.children]) if (!li.classList.contains("lib-running")) li.remove();
+  const q = $("librarySearch").value.trim().toLocaleLowerCase("vi");
+  const items = library.items.filter((it) => !q || (it.title || "").toLocaleLowerCase("vi").includes(q));
+  $("libraryCount").textContent = q ? `${items.length} / ${library.items.length} bài` : `${library.items.length} bài`;
+  items.forEach((it, i) => {
     const li = el("li");
     const meta = el("div", "lib-meta");
-    meta.append(el("strong", null, it.title),
-      el("span", "muted small", `${fmtDate(it.created_at)} · ${it.slide_count || "?"} slide · ${it.layout_mode === "reading" ? "Chế độ đọc" : "Trình chiếu"}`));
-    li.appendChild(meta);
-    const read = googleButton("Chế độ đọc", true, () => openReader(it.job_id));
-    li.appendChild(read);
+    const sub = el("span", "lib-sub muted small");
+    if (it.platform && PLATFORM_NAMES[it.platform]) sub.appendChild(el("span", `platform-tag ${it.platform}`, PLATFORM_NAMES[it.platform]));
+    sub.appendChild(el("span", null, `${fmtDate(it.created_at)} · ${it.slide_count || "?"} slide · ${it.layout_mode === "reading" ? "Chế độ đọc" : "Trình chiếu"}`));
+    meta.append(el("strong", null, it.title), sub);
+    const actions = el("div", "lib-actions");
+    actions.appendChild(googleButton("Chế độ đọc", true, () => openReader(it.job_id)));
     if (it.google_url) {
-      const a = el("a", "btn ghost", "Google Slides");
+      const a = el("a", "btn ghost btn-ext", "Google Slides");
       a.href = it.google_url;
       a.target = "_blank";
       a.rel = "noopener noreferrer";
-      li.appendChild(a);
+      actions.appendChild(a);
     }
     if (it.available) {
-      li.appendChild(googleButton("Chi tiết", false, () => {
+      actions.appendChild(googleButton("Chi tiết", false, () => {
         state.jobId = it.job_id;
         store.set("lastJob", it.job_id);
         history.replaceState(null, "", `#job=${it.job_id}`);
         poll();
       }));
     }
+    const del = googleButton("Xóa", false, () => deleteLibraryItem(it, del));
+    del.classList.add("lib-del");
+    del.setAttribute("aria-label", `Xóa “${it.title}”`);
+    actions.appendChild(del);
+    li.append(el("span", "lib-num", String(i + 1).padStart(2, "0")), meta, actions);
+    list.appendChild(li);
+  });
+  if (q && !items.length) {
+    const li = el("li", "muted small", `Không có bài nào khớp “${$("librarySearch").value.trim()}”.`);
+    li.style.display = "block";
     list.appendChild(li);
   }
+}
+
+async function deleteLibraryItem(it, btn) {
+  if (!window.confirm(`Xóa “${it.title}” khỏi thư viện?\nTệp PowerPoint và Chế độ đọc của bài này sẽ không mở lại được. Bản Google Slides (nếu có) vẫn còn trong Drive của bạn.`)) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/jobs/${it.job_id}`, { method: "DELETE" });
+  } catch (e) {
+    btn.disabled = false;
+    toast(e.message, true);
+    return;
+  }
+  library.items = library.items.filter((x) => x.job_id !== it.job_id);
+  if (store.get("lastJob") === it.job_id) store.del("lastJob");
+  if (!library.items.length) { openLibrary(false); return; }
+  renderLibraryItems();
+  toast("Đã xóa bài trình chiếu.");
 }
 
 // ------------------------------------------------------------------ events
@@ -1526,6 +1782,56 @@ $("readerFull").addEventListener("click", toggleFullscreen);
 $("readerCheck").addEventListener("click", checkGoogleSync);
 $("libraryBtn").addEventListener("click", () => openLibrary());
 $("libraryClose").addEventListener("click", startOver);
+$("libraryStart").addEventListener("click", startOver);
+$("librarySearch").addEventListener("input", renderLibraryItems);
+$("notifyBtn").addEventListener("click", toggleNotify);
+
+// Closing the tab mid-upload loses the upload (processing afterwards runs on the server and survives it).
+window.addEventListener("beforeunload", (e) => {
+  if (state.uploading) { e.preventDefault(); e.returnValue = ""; }
+});
+
+// Drop a video anywhere on the start page, not only on the dropzone.
+const hasFiles = (e) => Boolean(e.dataTransfer && [...e.dataTransfer.types].includes("Files"));
+let dragDepth = 0;
+document.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e) || $("uploadView").hidden) return;
+  dragDepth++;
+  $("dropOverlay").hidden = false;
+});
+document.addEventListener("dragleave", (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) $("dropOverlay").hidden = true;
+});
+document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });  // never navigate to the file
+document.addEventListener("drop", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  $("dropOverlay").hidden = true;
+  if ($("uploadView").hidden || dz.contains(e.target)) return;  // the dropzone handles its own drops
+  setMode("file");
+  selectFile(e.dataTransfer.files[0]);
+});
+
+// Paste a YouTube/Facebook link anywhere on the start page: switch to the URL tab and check it right away.
+function takePastedUrl(text) {
+  const url = (text || "").trim();
+  if (!url || /\s/.test(url) || !detectPlatform(url) || $("sourceTabs").hidden) return false;
+  setMode("url");
+  $("urlInput").value = url;
+  onUrlInput();
+  validateUrl();
+  return true;
+}
+document.addEventListener("paste", (e) => {
+  if ($("uploadView").hidden || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  if (takePastedUrl(e.clipboardData && e.clipboardData.getData("text"))) e.preventDefault();
+});
+$("urlInput").addEventListener("paste", () => {
+  setTimeout(() => { if (detectPlatform($("urlInput").value.trim()) && !state.urlCheck) validateUrl(); }, 0);
+});
 
 // Swipe left/right on the slide (touch screens).
 let touchX = null;

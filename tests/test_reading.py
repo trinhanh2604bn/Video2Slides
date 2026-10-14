@@ -162,3 +162,22 @@ def test_library_roundtrip_and_finished_jobs_are_kept(monkeypatch):
     assert not jobs.job_dir(job_id).exists()
     library.delete("f" * 32)
     assert library.get("f" * 32) is None
+
+
+def test_library_only_entry_reads_with_youtube_link_and_can_be_deleted():
+    """A finished presentation whose job folder is gone still opens, links its YouTube source and can be removed."""
+    from fastapi.testclient import TestClient
+    from app import main
+
+    jid = "e" * 32
+    library.save(jid, title="Bài YouTube", language="vi", style="professional", layout_mode="reading",
+                 slide_count=3, outline_json=sample_presentation().model_dump_json(), transcript_json=None,
+                 source={"type": "url", "platform": "youtube", "url": "https://www.youtube.com/watch?v=abcdefghijk"})
+    with TestClient(main.app) as c:
+        data = c.get(f"/api/jobs/{jid}/reading").json()
+        assert data["source_url"] == "https://www.youtube.com/watch?v=abcdefghijk"
+        item = next(i for i in c.get("/api/library").json()["items"] if i["job_id"] == jid)
+        assert item["platform"] == "youtube" and item["available"] is False
+        assert c.delete(f"/api/jobs/{jid}").status_code == 204
+        assert library.get(jid) is None
+        assert c.delete(f"/api/jobs/{jid}").status_code == 404
