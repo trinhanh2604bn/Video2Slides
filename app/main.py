@@ -671,14 +671,35 @@ def google_status() -> dict:
 
 @app.post("/api/google/connect", dependencies=[Depends(require_access), Depends(same_origin)])
 def google_connect(request: Request) -> dict:
-    """Start the OAuth consent flow; the browser navigates to the returned Google URL."""
+    """Start the OAuth consent flow; the browser opens the returned Google URL.
+
+    ``manual``: Google redirects to an unused loopback address (Desktop client on a public host such as
+    Modal); the user pastes that address into ``/api/google/oauth/complete``.
+    """
     if not settings.google_slides_enabled:
         raise HTTPException(status_code=404, detail="Tính năng Google Slides đang tắt.")
+    base = str(request.base_url)
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    if proto == "https" and base.startswith("http://"):  # TLS terminated by a proxy (Modal)
+        base = "https://" + base[len("http://"):]
     try:
-        redirect = google_auth.redirect_uri_for(str(request.base_url))
-        return {"auth_url": google_auth.start_authorization(redirect)}
+        redirect, manual = google_auth.plan_redirect(base)
+        return {"auth_url": google_auth.start_authorization(redirect), "manual": manual}
     except GoogleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+class GoogleCompleteIn(BaseModel):
+    url: str = Field(max_length=4096)
+
+
+@app.post("/api/google/oauth/complete", dependencies=[Depends(require_access), Depends(same_origin)])
+def google_complete(body: GoogleCompleteIn) -> dict:
+    """Manual flow: finish sign-in with the redirect address the user copied from the browser."""
+    try:
+        return google_auth.finish_from_url(body.url)
+    except GoogleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @app.get("/api/google/oauth/callback", response_class=HTMLResponse)

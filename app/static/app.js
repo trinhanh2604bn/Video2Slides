@@ -362,10 +362,33 @@ async function googleChipClick() {
 
 async function connectGoogle() {
   try {
-    const { auth_url } = await (await postJson("/api/google/connect")).json();
-    window.location.assign(auth_url);
+    const { auth_url, manual } = await (await postJson("/api/google/connect")).json();
+    if (!manual) { window.location.assign(auth_url); return; }
+    // Desktop OAuth client on a public host (Modal): Google cannot come back here, the user pastes the address.
+    window.open(auth_url, "_blank", "noopener");
+    $("googlePasteOpen").href = auth_url;
+    $("googlePasteInput").value = "";
+    $("googlePasteError").hidden = true;
+    $("googlePasteDialog").showModal();
   } catch (e) {
     toast(e.message, true);
+  }
+}
+
+async function finishGooglePaste(e) {
+  e.preventDefault();
+  const btn = $("googlePasteSubmit");
+  btn.disabled = true;
+  try {
+    setGoogle(await (await postJson("/api/google/oauth/complete", { url: $("googlePasteInput").value })).json());
+    $("googlePasteDialog").close();
+    toast("Đã kết nối tài khoản Google.");
+    if (state.job) renderGoogleBox(state.job);
+  } catch (err) {
+    $("googlePasteError").textContent = err.message;
+    $("googlePasteError").hidden = false;
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -1492,6 +1515,8 @@ $("cancelBtn").addEventListener("click", cancelJob);
 $("previewPrev").addEventListener("click", () => showSlide(preview.index - 1));
 $("previewNext").addEventListener("click", () => showSlide(preview.index + 1));
 $("googleChip").addEventListener("click", googleChipClick);
+$("googlePasteForm").addEventListener("submit", finishGooglePaste);
+$("googlePasteCancel").addEventListener("click", () => $("googlePasteDialog").close());
 $("googleCheck").addEventListener("change", () => store.set("googleAuto", $("googleCheck").checked ? "1" : "0"));
 $("readBtn").addEventListener("click", () => openReader(state.jobId, preview.index || 0));
 $("readerBack").addEventListener("click", closeReader);

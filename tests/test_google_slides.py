@@ -72,6 +72,28 @@ def test_redirect_must_be_loopback():
         auth.redirect_uri_for("https://example.com/")
 
 
+def test_public_host_with_desktop_client_uses_manual_paste_flow(google):
+    redirect, manual = auth.plan_redirect("https://me--app-web.modal.run/")
+    assert manual and redirect == auth.MANUAL_REDIRECT_URI
+    assert auth.plan_redirect("http://127.0.0.1:8000/") == (REDIRECT, False)
+    state = parse_qs(urlsplit(auth.start_authorization(redirect)).query)["state"][0]
+    with pytest.raises(GoogleAuthError) as exc:
+        auth.finish_from_url("http://127.0.0.1:53682/api/google/oauth/callback")
+    assert exc.value.code == "bad_paste"
+    status = auth.finish_from_url(f"  {redirect}?state={state}&code=code-1&scope=x  ")
+    assert status["connected"] and google.token_posts[0]["redirect_uri"] == auth.MANUAL_REDIRECT_URI
+
+
+def test_public_host_with_web_client_redirects_directly(google, tmp_path):
+    cb = "https://me--app-web.modal.run/api/google/oauth/callback"
+    web = {"web": {**CLIENT_JSON["installed"], "redirect_uris": [cb]}}
+    auth.settings.google_oauth_client_file.write_text(json.dumps(web), encoding="utf-8")
+    assert auth.plan_redirect("https://me--app-web.modal.run/") == (cb, False)
+    with pytest.raises(GoogleAuthError) as exc:
+        auth.plan_redirect("https://other.example/")
+    assert exc.value.code == "redirect_not_registered"
+
+
 def test_code_exchange_sends_verifier_and_stores_tokens(google):
     url = auth.start_authorization(REDIRECT)
     q = parse_qs(urlsplit(url).query)
@@ -252,12 +274,14 @@ def _upload(client, mp4, **extra):
 def test_status_and_connect_endpoints(api_client, google):
     st = api_client.get("/api/google/status").json()
     assert st["configured"] and not st["connected"] and "token" not in json.dumps(st).lower().replace("_", "")
-    # Only a loopback address can be an OAuth redirect for a Desktop client.
-    assert api_client.post("/api/google/connect").status_code == 409
+    # A Desktop client on a non-loopback host (Modal): manual flow through an unused loopback port.
+    r = api_client.post("/api/google/connect")
+    assert r.status_code == 200 and r.json()["manual"] is True
+    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2F" in r.json()["auth_url"]
     local = {"Host": "127.0.0.1:8000", "Origin": "http://127.0.0.1:8000"}
     r = api_client.post("/api/google/connect", headers=local)
     assert r.status_code == 200, r.text
-    assert "code_challenge=" in r.json()["auth_url"]
+    assert "code_challenge=" in r.json()["auth_url"] and r.json()["manual"] is False
     assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A8000%2Fapi%2Fgoogle%2Foauth%2Fcallback" in r.json()["auth_url"]
     assert api_client.post("/api/google/connect", headers={"Origin": "https://evil.example"}).status_code == 403
     bad = api_client.get("/api/google/oauth/callback", params={"state": "nope", "code": "x"})

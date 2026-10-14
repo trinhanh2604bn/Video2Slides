@@ -49,13 +49,24 @@ Sau đó chạy lại lệnh deploy để container nhận giá trị mới.
 
 ## Google Slides trên Modal
 
-Đăng nhập Google chỉ chạy được tại `http://127.0.0.1` (client OAuth loại "Desktop app"), nên bản Modal dùng
-lại kết nối đã đăng nhập trên máy: `client_secret.json` + `token.json` được chép vào Volume (thư mục
-`/google`). Mọi người dùng web app trên Modal đều xuất slide vào **Google Drive của tài khoản đó** (quyền
-`drive.file`: app chỉ thấy các file do chính nó tạo).
+Bấm **Kết nối Google** ngay trên web app. Vì client OAuth loại "Desktop app" chỉ cho Google quay về
+`127.0.0.1`, web app dùng luồng **dán địa chỉ**:
+
+1. Tab Google mở ra → đăng nhập, cho phép quyền.
+2. Google chuyển sang `http://127.0.0.1:53682/…` và báo "không thể kết nối" — bình thường.
+3. Chép toàn bộ địa chỉ trên thanh địa chỉ của tab đó, dán vào hộp thoại trong web app → **Hoàn tất**.
+
+Muốn bỏ bước dán: tạo client OAuth loại **Web application** với Authorized redirect URI
+`https://anhngocforwork2604--video2slides-web-web.us-east.modal.run/api/google/oauth/callback`, đặt file JSON
+của nó vào `/google/client_secret.json` trên Volume; web app sẽ tự quay về sau khi đăng nhập.
+
+Token lưu trong Volume (thư mục `/google`). Mọi người dùng web app trên Modal đều xuất slide vào **Google
+Drive của tài khoản đã kết nối** (quyền `drive.file`: app chỉ thấy các file do chính nó tạo).
+
+Cách cũ vẫn dùng được: đăng nhập trên máy rồi chép `token.json` lên Volume.
 
 Khi web app báo mất kết nối Google (token bị thu hồi, hoặc hết hạn sau 7 ngày nếu OAuth consent screen đang
-ở chế độ "Testing"): đăng nhập lại trên máy (`start.bat` → Kết nối Google), rồi chép lên lại:
+ở chế độ "Testing"): bấm Kết nối Google lại như trên, hoặc đăng nhập trên máy rồi chép lên:
 
 ```bash
 export MSYS_NO_PATHCONV=1   # Git Bash: tránh đổi /google thành C:/Program Files/Git/google

@@ -93,7 +93,7 @@ khi bạn bấm ngắt kết nối. Token không bao giờ được gửi tới 
 | Thông báo | Cách xử lý |
 |---|---|
 | "Google chưa cấu hình" ở góc trên | Chưa có `data/google/client_secret.json` hoặc tệp không phải loại *Desktop app* |
-| "Đăng nhập Google chỉ hoạt động khi mở ứng dụng tại http://127.0.0.1…" | Mở ứng dụng bằng `http://127.0.0.1:8000` thay vì tên máy / IP mạng LAN |
+| "Đăng nhập Google chỉ hoạt động khi mở ứng dụng tại http://127.0.0.1…" | Mở ứng dụng bằng `http://127.0.0.1:8000` thay vì tên máy / IP mạng LAN. Trên domain công khai (Modal) ứng dụng dùng luồng dán địa chỉ, xem docs/MODAL_WEB_DEPLOY_VI.md |
 | "Error 403: access_denied" trên trang Google | Email chưa có trong **Test users** (Bước 3.2) hoặc chưa Publish app |
 | "Google Drive API hoặc Google Slides API chưa được bật…" | Làm lại Bước 2 cho đúng dự án, đợi 1–2 phút |
 | "Bạn chưa cấp quyền tạo tệp trên Google Drive…" | Kết nối lại và nhớ đánh dấu ô quyền ở Bước 6.2 |

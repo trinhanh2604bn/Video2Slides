@@ -387,6 +387,27 @@
     </section>
   </main>
 
+  <!-- Google sign-in when the app is not on 127.0.0.1 (Desktop OAuth client): paste the redirect address -->
+  <dialog id="googlePasteDialog" class="paste-dialog" aria-labelledby="googlePasteTitle">
+    <form id="googlePasteForm" method="dialog">
+      <p class="step-label">Kết nối Google</p>
+      <h2 class="card-title" id="googlePasteTitle">Dán địa chỉ sau khi đăng nhập</h2>
+      <ol class="paste-steps muted">
+        <li>Đăng nhập và cho phép quyền trong tab Google vừa mở (<a id="googlePasteOpen" href="#" target="_blank" rel="noopener">mở lại tab</a>).</li>
+        <li>Google chuyển sang trang <b>http://127.0.0.1:53682/…</b> báo “không thể kết nối” — đây là bình thường.</li>
+        <li>Chép <b>toàn bộ địa chỉ</b> trên thanh địa chỉ của tab đó, dán vào ô dưới rồi bấm Hoàn tất.</li>
+      </ol>
+      <label class="sr-only" for="googlePasteInput">Địa chỉ sau khi đăng nhập</label>
+      <input id="googlePasteInput" type="url" autocomplete="off" spellcheck="false" maxlength="4096"
+             placeholder="http://127.0.0.1:53682/api/google/oauth/callback?state=…&code=…" required>
+      <p class="error" id="googlePasteError" role="alert" hidden></p>
+      <div class="row paste-actions">
+        <button type="button" class="btn ghost" id="googlePasteCancel">Hủy</button>
+        <button type="submit" class="btn primary" id="googlePasteSubmit">Hoàn tất</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="foot muted small">Video được xử lý trên máy của bạn và tự động xóa sau khi hoàn tất. Chỉ xử lý nội dung bạn sở hữu hoặc được phép sử dụng.</footer>
   <script src="app.js"></script>
 </body>

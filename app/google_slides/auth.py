@@ -4,6 +4,10 @@
   nothing else in the user's Drive. Slides API calls on those presentations accept it too.
 * Client: an OAuth client of type "Desktop app" downloaded from Google Cloud Console as JSON
   (``GOOGLE_OAUTH_CLIENT_FILE``). Desktop clients allow any ``http://127.0.0.1:<port>`` redirect.
+* App opened on a public host (e.g. the Modal web app): a "Web application" client whose
+  ``redirect_uris`` list ``https://<host>/api/google/oauth/callback`` redirects back directly; a Desktop
+  client falls back to a manual flow — Google redirects to an unused loopback port, the page there fails to
+  load, and the user pastes that address back into the app (:func:`finish_from_url`).
 * Tokens are kept in a plain JSON file under DATA_DIR (``data/google/token.json``, ignored by
   Git) and never reach the browser.
 """
@@ -20,7 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
@@ -36,6 +40,7 @@ REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 ABOUT_URL = "https://www.googleapis.com/drive/v3/about"
 CALLBACK_PATH = "/api/google/oauth/callback"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MANUAL_REDIRECT_URI = f"http://127.0.0.1:53682{CALLBACK_PATH}"  # nothing listens here; the user copies the URL
 STATE_TTL_SEC = 600
 REFRESH_MARGIN_SEC = 120
 
@@ -57,6 +62,8 @@ http_factory: Callable[[], httpx.Client] = _default_http
 class ClientConfig:
     client_id: str
     client_secret: str
+    kind: str = "installed"                 # "installed" (Desktop app) or "web"
+    redirect_uris: tuple[str, ...] = ()
 
 
 def load_client() -> ClientConfig | None:
@@ -66,11 +73,13 @@ def load_client() -> ClientConfig | None:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    section = data.get("installed") or data.get("web") or {}
+    kind = "installed" if data.get("installed") else "web"
+    section = data.get(kind) or {}
     cid, secret = str(section.get("client_id") or ""), str(section.get("client_secret") or "")
     if not cid.endswith(".apps.googleusercontent.com"):
         return None
-    return ClientConfig(cid, secret)
+    uris = tuple(str(u).rstrip("/") for u in section.get("redirect_uris") or ())
+    return ClientConfig(cid, secret, kind, uris)
 
 
 def configured() -> bool:
@@ -145,6 +154,29 @@ def redirect_uri_for(base_url: str) -> str:
     return f"http://{netloc}{CALLBACK_PATH}"
 
 
+def plan_redirect(base_url: str) -> tuple[str, bool]:
+    """``(redirect_uri, manual)`` for the URL the app was opened with.
+
+    Loopback: direct redirect. Public host: direct only with a "web" client that lists this callback;
+    with a Desktop client, the manual paste flow (``manual=True``).
+    """
+    try:
+        return redirect_uri_for(base_url), False
+    except GoogleAuthError:
+        pass
+    client = load_client()
+    if client is None:
+        raise GoogleAuthError("Chưa cấu hình OAuth client của Google (xem docs/GOOGLE_SLIDES_SETUP_VI.md).",
+                              "not_configured")
+    direct = base_url.rstrip("/") + CALLBACK_PATH
+    if client.kind == "web":
+        if direct in client.redirect_uris:
+            return direct, False
+        raise GoogleAuthError(f"OAuth client loại Web chưa khai báo Authorized redirect URI {direct} "
+                              "trong Google Cloud Console.", "redirect_not_registered")
+    return MANUAL_REDIRECT_URI, True
+
+
 def start_authorization(redirect_uri: str) -> str:
     """Authorization URL for Google's consent screen (PKCE S256 + one-time state)."""
     client = load_client()
@@ -213,6 +245,19 @@ def finish_authorization(state: str, code: str) -> dict[str, Any]:
         _save_token(tok)
         _set_state(last_error=None, account=account)
     return status()
+
+
+def finish_from_url(pasted: str) -> dict[str, Any]:
+    """Manual flow: the user pastes the address Google redirected to (it holds ``state`` and ``code``)."""
+    query = parse_qs(urlsplit((pasted or "").strip()).query)
+    if (query.get("error") or [""])[0]:
+        raise GoogleAuthError("Bạn đã hủy kết nối Google hoặc Google báo lỗi khi đăng nhập.", "denied")
+    state, code = (query.get("state") or [""])[0], (query.get("code") or [""])[0]
+    if not state or not code:
+        raise GoogleAuthError("Địa chỉ đã dán không chứa mã đăng nhập Google. Hãy chép toàn bộ địa chỉ trên "
+                              "thanh địa chỉ của tab sau khi đăng nhập (bắt đầu bằng http://127.0.0.1:53682/).",
+                              "bad_paste")
+    return finish_authorization(state, code)
 
 
 def _account(http: httpx.Client, access_token: str) -> dict[str, str] | None:
