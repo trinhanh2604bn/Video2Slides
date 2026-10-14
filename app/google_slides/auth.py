@@ -168,7 +168,9 @@ def plan_redirect(base_url: str) -> tuple[str, bool]:
     if client is None:
         raise GoogleAuthError("Chưa cấu hình OAuth client của Google (xem docs/GOOGLE_SLIDES_SETUP_VI.md).",
                               "not_configured")
-    direct = base_url.rstrip("/") + CALLBACK_PATH
+    # Google only accepts https redirects for public hosts; proxies (Modal) may hand the app plain http.
+    parts = urlsplit(base_url)
+    direct = f"https://{parts.netloc}{parts.path.rstrip('/')}{CALLBACK_PATH}"
     if client.kind == "web":
         if direct in client.redirect_uris:
             return direct, False

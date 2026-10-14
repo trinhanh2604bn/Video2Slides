@@ -89,6 +89,7 @@ def test_public_host_with_web_client_redirects_directly(google, tmp_path):
     web = {"web": {**CLIENT_JSON["installed"], "redirect_uris": [cb]}}
     auth.settings.google_oauth_client_file.write_text(json.dumps(web), encoding="utf-8")
     assert auth.plan_redirect("https://me--app-web.modal.run/") == (cb, False)
+    assert auth.plan_redirect("http://me--app-web.modal.run/") == (cb, False)  # TLS ended at the proxy
     with pytest.raises(GoogleAuthError) as exc:
         auth.plan_redirect("https://other.example/")
     assert exc.value.code == "redirect_not_registered"
