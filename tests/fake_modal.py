@@ -51,6 +51,7 @@ class FakeModalLLM:
         self.calls: dict[str, dict] = {}
         self.fail: dict | None = None      # {"error_code", "error", "retryable"} for every chat
         self.gpu_fraction = 1.0
+        self.max_num_ctx: int | None = None  # None = an older worker that does not advertise limits
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -64,6 +65,7 @@ class FakeModalLLM:
             return httpx.Response(200, json={
                 "ok": True, "model": "qwen3:4b", "ollama_version": "0.40.3", "gpu": "L4",
                 "model_ready": self.model_ready,
+                **({"limits": {"max_num_ctx": self.max_num_ctx}} if self.max_num_ctx else {}),
                 "model_info": {"capabilities": ["completion", "thinking"], "parameter_size": "4.0B",
                                "quantization": "Q4_K_M", "family": "qwen3", "context_length": 262144}
                 if self.model_ready else {}})

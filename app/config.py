@@ -107,8 +107,8 @@ class Settings:
     # Long videos: from this transcript length Gemini also writes in validated stages (part summaries -> outline ->
     # slide batches), each stage falling back to Ollama on Modal on its own (app/ai/staged.py).
     llm_staged_min_sec: int = field(default_factory=lambda: _int("LLM_STAGED_MIN_SECONDS", 900))
-    # Context window for the staged route (both providers). 8192 = measured default; 16384 only after measuring.
-    llm_long_num_ctx: int = field(default_factory=lambda: max(4096, min(16384, _int("LLM_LONG_NUM_CTX", 8192))))
+    # Context window for the staged route (both providers; Modal clamps it to the worker's max_num_ctx).
+    llm_long_num_ctx: int = field(default_factory=lambda: max(4096, min(32768, _int("LLM_LONG_NUM_CTX", 32768))))
 
     # Ollama on Modal (GPU worker infrastructure/modal_llm_worker.py), called through its proxy-auth
     # HTTPS API with the same MODAL_PROXY_TOKEN_* as the image worker. The Modal-side limits
@@ -118,6 +118,10 @@ class Settings:
     modal_llm_app_name: str = field(default_factory=lambda: os.environ.get("MODAL_LLM_APP_NAME", "video2slides-llm-worker"))
     modal_llm_model: str = field(default_factory=lambda: os.environ.get("MODAL_LLM_MODEL", "qwen3:4b"))
     modal_llm_gpu: str = field(default_factory=lambda: os.environ.get("MODAL_LLM_GPU", "L4"))
+    # Context window on the Modal GPU. 8k forced a 120-min transcript down to ~2k tokens of notes for the
+    # outline; qwen3:4b's KV cache at 32k is ~5 GB, which fits next to the weights on L4/A10G/T4. Clamped to
+    # the worker's advertised max_num_ctx, so an older worker deployment keeps working.
+    modal_llm_num_ctx: int = field(default_factory=lambda: max(4096, min(32768, _int("MODAL_LLM_NUM_CTX", 32768))))
     # One chat request, including a cold start (container + Ollama start + model load).
     modal_llm_timeout_sec: int = field(default_factory=lambda: _int("MODAL_LLM_REQUEST_TIMEOUT_SECONDS", 600))
     modal_http_timeout_sec: int = field(default_factory=lambda: _int("MODAL_HTTP_TIMEOUT_SECONDS", 30))
@@ -174,6 +178,10 @@ class Settings:
 
     # Access control: when set, every API call must send this shared password.
     app_password: str = field(default_factory=lambda: os.environ.get("APP_PASSWORD", ""))
+    # Serverless hosting (Modal) stops an idle container even while the job thread is working: while a job
+    # is queued or running, the app requests its own /api/health every KEEPALIVE_INTERVAL_SECONDS.
+    keepalive_while_busy: bool = field(default_factory=lambda: _bool("KEEPALIVE_WHILE_BUSY", False))
+    keepalive_interval_sec: int = field(default_factory=lambda: max(10, _int("KEEPALIVE_INTERVAL_SECONDS", 60)))
 
     # Video URL import (YouTube / Facebook)
     url_import_enabled: bool = field(default_factory=lambda: _bool("URL_IMPORT_ENABLED", True))

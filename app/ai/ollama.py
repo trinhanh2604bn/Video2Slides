@@ -329,15 +329,20 @@ class OllamaProvider(OutlineProvider):
         if report:
             self.stats.chunks = len(parts)
         notes: list[str] = []
+        spans: list[tuple[float, float]] = []
         for i, part in enumerate(parts, start=1):
             if report and self._req.progress:
                 self._req.progress("analyzing", i - 1, len(parts) + 1)
             notes.append(self._summarise(transcript_lines(part), lang, i, len(parts), part[0].start, part[-1].end))
+            spans.append((part[0].start, part[-1].end))
         text = "\n\n".join(notes)
         # Very long videos: condense the notes again (pairs of parts) until they fit. Bounded by log2(parts).
+        # Each pair keeps its own time span, so its facts stay tied to that part of the video.
         while est_tokens(text) > budget and len(notes) > 1:
             grouped = ["\n\n".join(notes[i:i + 2]) for i in range(0, len(notes), 2)]
-            notes = [self._summarise(g, lang, i + 1, len(grouped), 0, self._duration) for i, g in enumerate(grouped)]
+            spans = [(spans[i][0], spans[min(i + 1, len(spans) - 1)][1]) for i in range(0, len(spans), 2)]
+            notes = [self._summarise(g, lang, i + 1, len(grouped), spans[i][0], spans[i][1])
+                     for i, g in enumerate(grouped)]
             text = "\n\n".join(notes)
         if est_tokens(text) > budget:
             raise AIError("Video quá dài so với cửa sổ ngữ cảnh của model; hãy tăng OLLAMA_NUM_CTX hoặc dùng video ngắn hơn.",
@@ -383,7 +388,9 @@ class OllamaProvider(OutlineProvider):
             n = max(2, min(MAX_SLIDES, int(req.slide_count)))
             return n, n
         rec = recommend_slide_count(t.duration, len(t.text.split()))
-        return max(4, rec - 2), min(MAX_SLIDES, rec + 2)
+        # Long videos: a wide lower bound, so the model is never forced to pad the deck with slides the
+        # source does not support (an exact minimum of rec - 2 produced filler such as "Thank you" slides).
+        return max(4, rec - max(2, rec // 4)), min(MAX_SLIDES, rec + 2)
 
     def _outline(self, req: OutlineRequest, source: str, source_kind: str, lang: str,
                  duration: float) -> tuple[list[OutlineEntry], str, str]:

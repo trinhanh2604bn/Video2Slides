@@ -174,6 +174,11 @@ def pending_count() -> int:
     return _queue.qsize()
 
 
+def busy() -> bool:
+    """A job is waiting or being processed (task_done() is only called once a job has finished)."""
+    return _queue.unfinished_tasks > 0
+
+
 def enqueue(job_id: str) -> int:
     """Queue a job and return its position (1 = next)."""
     update(job_id, status="queued", stage="queued", error=None, cancel_requested=False, progress=None)

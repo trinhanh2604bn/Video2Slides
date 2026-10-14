@@ -253,6 +253,7 @@ class ModalOllamaProvider(OllamaProvider):
     def __init__(self, client: ModalOllamaClient | None = None, model: str | None = None):
         model = model or config.settings.modal_llm_model
         super().__init__(client=client or ModalOllamaClient(model=model), model=model)
+        self.num_ctx = config.settings.modal_llm_num_ctx
 
     def _prepare(self) -> None:
         s = config.settings
@@ -265,8 +266,16 @@ class ModalOllamaProvider(OllamaProvider):
             raise AIError(_ERRORS["model_missing"], "modal_model_missing")
         self.info = self.client.show(self.model)
         self.think = (s.ollama_think == "on") if self.info.supports_thinking else None
-        if self.info.context_length and self.num_ctx > self.info.context_length:
-            self.num_ctx = self.info.context_length
+        self.num_ctx = self.clamp_ctx(self.num_ctx)
+
+    def clamp_ctx(self, num_ctx: int) -> int:
+        """Never ask for more context than the model or the deployed worker accepts."""
+        limit = (self.client.health().get("limits") or {}).get("max_num_ctx")
+        if isinstance(limit, int) and limit > 0:
+            num_ctx = min(num_ctx, limit)
+        if self.info and self.info.context_length:
+            num_ctx = min(num_ctx, self.info.context_length)
+        return num_ctx
 
     def describe(self) -> dict:
         return {**super().describe(), "provider": self.name, "location": "modal", "gpu_type": config.settings.modal_llm_gpu,

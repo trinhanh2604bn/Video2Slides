@@ -78,21 +78,29 @@ def status(upload_id: str) -> dict:
             "complete": received == meta["size"]}
 
 
-def append(upload_id: str, offset: int, data: bytes) -> dict:
-    """Append ``data`` at ``offset``. A chunk that was already stored (client retry after a lost response)
-    is accepted without writing it twice; any other offset gap raises OffsetMismatch."""
+def chunk_file(upload_id: str) -> Path:
+    """A fresh temporary file inside the upload folder for one incoming chunk: the request body is
+    streamed to disk instead of being held in memory (many parallel 64 MB chunks would exhaust RAM)."""
+    _meta(upload_id)
+    return _dir(upload_id) / f"chunk-{secrets.token_hex(8)}.tmp"
+
+
+def append(upload_id: str, offset: int, chunk: Path) -> dict:
+    """Append the bytes of the file ``chunk`` at ``offset``. A chunk that was already stored (client retry
+    after a lost response) is accepted without writing it twice; any other offset gap raises OffsetMismatch."""
     meta = _meta(upload_id)
     part = _dir(upload_id) / "data.part"
+    length = chunk.stat().st_size
     with _lock(upload_id):
         received = part.stat().st_size
-        if offset + len(data) <= received and offset < received:
+        if offset + length <= received and offset < received:
             return status(upload_id)  # duplicate of a stored chunk
         if offset != received:
             raise OffsetMismatch(received)
-        if received + len(data) > meta["size"]:
+        if received + length > meta["size"]:
             raise ValueError("chunk exceeds declared size")
-        with part.open("ab") as fh:
-            fh.write(data)
+        with chunk.open("rb") as src, part.open("ab") as fh:
+            shutil.copyfileobj(src, fh, 1024 * 1024)
     return status(upload_id)
 
 

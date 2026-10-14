@@ -139,6 +139,17 @@ def test_password_gate(client, monkeypatch):
     assert client.get("/api/jobs/" + "0" * 32, headers={"X-App-Password": "s3cret"}).status_code == 404
 
 
+def test_config_hides_google_account_without_password(client, monkeypatch):
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, app_password="s3cret"))
+    status = {"enabled": True, "configured": True, "connected": True,
+              "account": {"email": "owner@example.com", "name": "Owner"}, "scopes": [], "last_error": None}
+    monkeypatch.setattr(main.google_auth, "status", lambda: dict(status))
+    assert client.get("/api/config").json()["google"]["account"] is None
+    assert "owner@example.com" not in client.get("/api/config").text
+    g = client.get("/api/config", headers={"X-App-Password": "s3cret"}).json()["google"]
+    assert g["account"]["email"] == "owner@example.com" and g["connected"]
+
+
 @pytest.fixture
 def slow_client(monkeypatch):
     """Transcription that reports progress for up to ~10 s, so a job can be observed mid-flight."""
@@ -269,6 +280,17 @@ def test_chunked_upload_resend_is_idempotent(client):
     st = client.put(f"/api/uploads/{uid}?offset=4", content=data[4:]).json()
     assert st["received"] == 10 and st["complete"]
     assert client.get(f"/api/uploads/{uid}").json()["complete"]
+    # Chunks are streamed through temporary files that never stay behind.
+    assert [p.name for p in (main.settings.data_dir / "uploads" / uid).iterdir()
+            if p.name.endswith(".tmp")] == []
+
+
+def test_chunked_upload_large_chunk_is_streamed(client):
+    data = bytes(range(256)) * (3 * 4096 + 7)  # ~3 MB: several flushes to the temporary file
+    uid = _start_upload(client, data)
+    assert client.put(f"/api/uploads/{uid}?offset=0", content=data).json()["complete"]
+    assert (main.settings.data_dir / "uploads" / uid / "data.part").read_bytes() == data
+    assert client.put(f"/api/uploads/{uid}?offset=0", content=b"").status_code == 400  # empty body
 
 
 def test_chunked_upload_invalid_video_is_cleaned_up(client):
@@ -306,3 +328,27 @@ def test_youtube_block_suggests_studio_download_and_upload():
     assert "YouTube Studio" in fallback_hint("youtube", "bot_check")
     assert fallback_hint("facebook", "bot_check") == UPLOAD_HINT
     assert fallback_hint("youtube", "too_long") == UPLOAD_HINT
+
+
+def test_keepalive_pings_only_while_busy(monkeypatch):
+    import httpx
+
+    calls, ticks = [], iter([False, True, False])
+
+    class Stop(Exception):
+        pass
+
+    def fake_sleep(_):
+        try:
+            busy = next(ticks)
+        except StopIteration:
+            raise Stop from None
+        monkeypatch.setattr(main.jobs, "busy", lambda: busy)
+
+    monkeypatch.setattr(main.time, "sleep", fake_sleep)
+    monkeypatch.setattr(main.url_service, "pending_downloads", lambda: 0)
+    monkeypatch.setattr(main, "_public_base", "https://app.example/")
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: calls.append(url))
+    with pytest.raises(Stop):
+        main._keepalive_loop()
+    assert calls == ["https://app.example/api/health"]  # one ping, for the one busy tick

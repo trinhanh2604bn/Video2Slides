@@ -50,7 +50,7 @@ MODELS_DIR = "/models"
 OLLAMA_ADDR = "127.0.0.1:11434"     # loopback only: the daemon is reachable from inside the container only
 OLLAMA_URL = f"http://{OLLAMA_ADDR}"
 OLLAMA_LOG = "/tmp/ollama.log"     # container-local; never contains prompts (Ollama logs request metadata only)
-DEFAULT_NUM_CTX = 8192              # the warm-up load uses the same context as requests (no reload per request)
+DEFAULT_NUM_CTX = 32768             # = backend MODAL_LLM_NUM_CTX: warm-up loads the context requests use (no reload)
 SCALEDOWN_SEC = int(os.environ.get("V2S_LLM_SCALEDOWN_SEC", "60"))
 REQUEST_TIMEOUT_SEC = 600           # one generation, including a cold start
 STARTUP_TIMEOUT_SEC = 60            # `ollama serve` must answer within this
@@ -59,7 +59,7 @@ LOAD_TIMEOUT_SEC = 240              # model load into GPU memory
 # Request limits (checked in the CPU API before any GPU starts, and again on the GPU side)
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_MESSAGES = 8
-MAX_NUM_CTX = 16384
+MAX_NUM_CTX = 32768                 # qwen3:4b KV cache ~5 GB at 32k: fits beside the weights on L4/A10G/T4
 MAX_NUM_PREDICT = 8192
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 CALL_ID_RE = re.compile(r"^fc-[A-Za-z0-9]{10,64}$")

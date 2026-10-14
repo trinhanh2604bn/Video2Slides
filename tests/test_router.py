@@ -231,7 +231,7 @@ def test_modal_requests_carry_proxy_auth_and_mapped_ollama_parameters(env):
     p = fake.provider()
     p.generate(_req(env / "job"))
     first = fake.submitted[0]
-    assert first["model"] == "qwen3:4b" and first["options"]["num_ctx"] == 8192
+    assert first["model"] == "qwen3:4b" and first["options"]["num_ctx"] == 32768
     assert first["think"] is False and first["format"]["type"] == "object"
     assert "<transcript>" in first["messages"][-1]["content"]  # transcript text, never the video
     info = p.describe()
@@ -288,3 +288,10 @@ def test_cache_records_provider_and_is_not_shared_with_local_ollama(env):
     local = OllamaProvider(client=OllamaClient(base_url="http://ollama.test", transport=fake.ollama.transport()))
     local.generate(_req(env / "job"))
     assert local.stats.cache_hits == 0  # another provider never reuses these answers
+
+
+def test_modal_context_is_clamped_to_the_deployed_worker(env):
+    fake = FakeModalLLM()
+    fake.max_num_ctx = 16384  # worker deployed before the 32k context
+    fake.provider().generate(_req(env / "job"))
+    assert {r["options"]["num_ctx"] for r in fake.submitted} == {16384}

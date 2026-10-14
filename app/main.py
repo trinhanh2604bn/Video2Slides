@@ -46,21 +46,54 @@ STATIC_DIR = Path(__file__).parent / "static"
 CHUNK = 1024 * 1024
 
 
+# Public base URL of this app, learnt from incoming requests (used by the keep-alive below).
+_public_base: str | None = None
+
+
+def _external_base(request: Request) -> str:
+    base = str(request.base_url)
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    if proto == "https" and base.startswith("http://"):  # TLS terminated by a proxy (Modal)
+        base = "https://" + base[len("http://"):]
+    return base
+
+
+def _keepalive_loop() -> None:
+    """While a job is queued or running, request our own public URL so the hosting platform counts the
+    container as active and does not scale it down in the middle of a job (the browser may be closed)."""
+    import httpx
+
+    while True:
+        time.sleep(settings.keepalive_interval_sec)
+        if not _public_base or not (jobs.busy() or url_service.pending_downloads()):
+            continue
+        try:
+            httpx.get(_public_base + "api/health", timeout=30)
+        except httpx.HTTPError as exc:
+            log.warning("keep-alive request failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.jobs_dir.mkdir(parents=True, exist_ok=True)
     jobs.start_worker(run_job)
+    if settings.keepalive_while_busy:
+        threading.Thread(target=_keepalive_loop, name="keep-alive", daemon=True).start()
     yield
 
 
 app = FastAPI(title="Video2Slides", version="0.1.0", lifespan=lifespan)
 
 
+def _has_access(x_app_password: str | None) -> bool:
+    if not settings.app_password:
+        return True
+    return bool(x_app_password) and hmac.compare_digest(x_app_password.encode(), settings.app_password.encode())
+
+
 def require_access(x_app_password: str | None = Header(default=None)) -> None:
     """Optional shared-password gate (enabled when APP_PASSWORD is set)."""
-    if not settings.app_password:
-        return
-    if not x_app_password or not hmac.compare_digest(x_app_password.encode(), settings.app_password.encode()):
+    if not _has_access(x_app_password):
         raise HTTPException(status_code=401, detail="Sai hoặc thiếu mật khẩu truy cập.")
 
 
@@ -132,7 +165,10 @@ def llm_health() -> dict:
 
 
 @app.get("/api/config")
-def public_config() -> dict:
+def public_config(x_app_password: str | None = Header(default=None)) -> dict:
+    google = google_auth.status()
+    if not _has_access(x_app_password):
+        google["account"] = None  # the connected account's email is only shown after the password
     return {
         "max_upload_mb": settings.max_upload_mb,
         "max_duration_sec": settings.max_duration_sec,
@@ -150,7 +186,7 @@ def public_config() -> dict:
         "layout_modes": list(LAYOUT_MODES),
         "default_layout_mode": settings.default_layout_mode if settings.default_layout_mode in LAYOUT_MODES
         else "presentation",
-        "google": google_auth.status(),
+        "google": google,
         "url_import": {
             "enabled": settings.url_import_enabled,
             "max_duration_sec": settings.url_max_duration_sec,
@@ -297,21 +333,36 @@ async def put_upload_chunk(upload_id: str, request: Request, offset: int) -> dic
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > uploads.MAX_CHUNK_BYTES:
         raise HTTPException(status_code=413, detail="Phần dữ liệu tải lên quá lớn.")
-    data = bytearray()
-    async for part in request.stream():
-        data += part
-        if len(data) > uploads.MAX_CHUNK_BYTES:
-            raise HTTPException(status_code=413, detail="Phần dữ liệu tải lên quá lớn.")
-    if not data:
-        raise HTTPException(status_code=400, detail="Phần dữ liệu tải lên rỗng.")
     try:
-        return await run_in_threadpool(uploads.append, upload_id, offset, bytes(data))
+        tmp = uploads.chunk_file(upload_id)
     except uploads.UploadNotFound:
+        raise HTTPException(status_code=404, detail="Phiên tải lên đã hết hạn, vui lòng chọn lại tệp.") from None
+    try:
+        # Stream to a temporary file, flushing ~1 MB at a time: memory stays small however many chunks
+        # arrive in parallel, and the event loop is not blocked by the (network) volume writes.
+        total, buf = 0, bytearray()
+        with tmp.open("wb") as fh:
+            async for part in request.stream():
+                total += len(part)
+                if total > uploads.MAX_CHUNK_BYTES:
+                    raise HTTPException(status_code=413, detail="Phần dữ liệu tải lên quá lớn.")
+                buf += part
+                if len(buf) >= CHUNK:
+                    await run_in_threadpool(fh.write, bytes(buf))
+                    buf.clear()
+            if buf:
+                await run_in_threadpool(fh.write, bytes(buf))
+        if not total:
+            raise HTTPException(status_code=400, detail="Phần dữ liệu tải lên rỗng.")
+        return await run_in_threadpool(uploads.append, upload_id, offset, tmp)
+    except (uploads.UploadNotFound, FileNotFoundError):  # the upload was finished or removed meanwhile
         raise HTTPException(status_code=404, detail="Phiên tải lên đã hết hạn, vui lòng chọn lại tệp.") from None
     except uploads.OffsetMismatch as exc:
         raise HTTPException(status_code=409, detail={"received": exc.received}) from None
     except ValueError:
         raise HTTPException(status_code=400, detail="Dữ liệu tải lên vượt quá kích thước tệp đã khai báo.") from None
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 @app.post("/api/uploads/{upload_id}/finish", dependencies=[Depends(require_access)], status_code=202)
@@ -678,10 +729,7 @@ def google_connect(request: Request) -> dict:
     """
     if not settings.google_slides_enabled:
         raise HTTPException(status_code=404, detail="Tính năng Google Slides đang tắt.")
-    base = str(request.base_url)
-    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
-    if proto == "https" and base.startswith("http://"):  # TLS terminated by a proxy (Modal)
-        base = "https://" + base[len("http://"):]
+    base = _external_base(request)
     try:
         redirect, manual = google_auth.plan_redirect(base)
         return {"auth_url": google_auth.start_authorization(redirect), "manual": manual}
@@ -887,6 +935,9 @@ def admin_kill_switch(body: KillSwitchIn) -> dict:
 @app.middleware("http")
 async def revalidate_static(request: Request, call_next):
     """Frontend files are small: always revalidate (ETag) so an app update is never served stale."""
+    global _public_base
+    if settings.keepalive_while_busy and _public_base is None:
+        _public_base = _external_base(request)
     response = await call_next(request)
     if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache"

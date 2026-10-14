@@ -69,6 +69,7 @@ class StagedRoutedProvider(OllamaProvider):
         self.client = self._modal_client()
         self.model = settings.modal_llm_model
         self._prepare_modal()
+        self.num_ctx = self._modal.clamp_ctx(self.num_ctx)
 
     def _prepare(self) -> None:
         if self.active == "gemini":
@@ -78,6 +79,8 @@ class StagedRoutedProvider(OllamaProvider):
         else:
             self._prepare_modal()
         self.num_ctx = settings.llm_long_num_ctx
+        if self.active != "gemini":
+            self.num_ctx = self._modal.clamp_ctx(self.num_ctx)
 
     def _prepare_modal(self) -> None:
         modal = self._modal or self._modal_factory()

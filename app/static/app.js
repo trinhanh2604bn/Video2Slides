@@ -191,7 +191,7 @@ function el(tag, cls, text) {
 // ------------------------------------------------------------------ setup
 async function init() {
   try {
-    state.config = await (await fetch("/api/config")).json();
+    state.config = await (await fetch("/api/config", { headers: authHeaders() })).json();
   } catch {
     $("fileError").textContent = "Không kết nối được máy chủ.";
     $("fileError").hidden = false;
@@ -1561,6 +1561,7 @@ $("authForm").addEventListener("submit", async (e) => {
     if (/mật khẩu/.test(err.message)) { $("authError").textContent = "Sai mật khẩu."; $("authError").hidden = false; return; }
   }
   $("authError").hidden = true;
+  refreshGoogle();  // /api/config leaves out the Google account until the password is known
   route();
 });
 

@@ -76,6 +76,9 @@ def web():
     os.environ["MODEL_CACHE_DIR"] = f"{DATA_DIR}/.cache/models"
     # No local FFmpeg/Whisper pipeline here: media always goes to the GPU worker.
     os.environ["MEDIA_PROCESSING"] = "modal"
+    # Modal only counts HTTP requests as activity: keep the container alive while a job runs, even when
+    # the browser tab is closed (otherwise it scales down after SCALEDOWN_SEC and the job is lost).
+    os.environ.setdefault("KEEPALIVE_WHILE_BUSY", "1")
     if not os.environ.get("APP_PASSWORD"):
         raise RuntimeError("APP_PASSWORD is required: the Modal URL is public. Add it to the video2slides-web-env Secret.")
     if not os.environ.get("MODAL_MEDIA_WORKER_URL"):

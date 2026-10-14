@@ -144,6 +144,32 @@ def test_long_transcript_is_condensed_not_truncated():
     assert "Part 1/" in outline_src and "[" in outline_src  # timestamped notes keep source references
 
 
+def test_recondensed_pairs_keep_their_own_time_span(monkeypatch):
+    p = _provider(FakeOllama())
+    t = _transcript(n=400, step=5.0, text="Phần {i} của bài giảng có định nghĩa, ví dụ và số liệu cụ thể để ghi nhớ.")
+    p._req, p._duration = _req(t), t.duration
+    calls = []
+
+    def fake_summarise(lines, lang, part, parts, start, end):
+        calls.append((parts, start, end))
+        return "x" * 600
+    monkeypatch.setattr(p, "_summarise", fake_summarise)
+    p._condense(t.segments, "vi", budget=500)
+    n = calls[0][0]
+    first_round, regrouped = calls[:n], calls[n:]
+    assert n >= 4 and regrouped and regrouped[0][0] == (n + 1) // 2
+    # The first pair covers the first two parts only, not the whole video.
+    assert regrouped[0][1:] == (first_round[0][1], first_round[1][2])
+    assert regrouped[1][1:] == (first_round[2][1], first_round[3][2])
+
+
+def test_long_video_slide_range_does_not_force_padding():
+    words = " ".join(["word"] * 18000)  # ~120 minutes of English lecture
+    t = Transcript([Segment(0, 7200, words)], "en", 7200.0)
+    n_min, n_max = OllamaProvider._count_range(OutlineRequest(transcript=t, language="en", slide_count=None), t)
+    assert n_max == 40 and n_min <= 32
+
+
 # ---------------------------------------------------------------------- validation and repairs
 
 def test_invalid_json_then_valid_is_repaired():
