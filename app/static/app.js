@@ -56,7 +56,7 @@ const THEME_LABELS = { system: "Theo hệ thống", light: "Sáng", dark: "Tối
 const darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
 function applyTheme(pref) {
-  if (!THEME_LABELS[pref]) pref = "system";
+  if (!THEME_LABELS[pref]) pref = "light";
   const dark = pref === "dark" || (pref === "system" && Boolean(darkQuery && darkQuery.matches));
   const root = document.documentElement;
   root.setAttribute("data-theme", dark ? "dark" : "light");
@@ -76,7 +76,7 @@ function setTheme(pref) {
 }
 
 function themePref() {
-  return document.documentElement.getAttribute("data-theme-pref") || "system";
+  return document.documentElement.getAttribute("data-theme-pref") || "light";
 }
 
 function toggleThemeMenu(open, focusItem = false) {
@@ -87,7 +87,7 @@ function toggleThemeMenu(open, focusItem = false) {
 }
 
 function setupTheme() {
-  applyTheme(store.get("theme") || "system");
+  applyTheme(store.get("theme") || "light");
   const btn = $("themeBtn"), list = $("themeList");
   btn.addEventListener("click", () => toggleThemeMenu(list.hidden, true));
   btn.addEventListener("keydown", (e) => {
@@ -118,7 +118,7 @@ function setupTheme() {
     else if (darkQuery.addListener) darkQuery.addListener(onChange);
   }
   // Another tab changed the theme.
-  window.addEventListener("storage", (e) => { if (e.key === "theme") applyTheme(e.newValue || "system"); });
+  window.addEventListener("storage", (e) => { if (e.key === "theme") applyTheme(e.newValue || "light"); });
 }
 
 // ------------------------------------------------------------------ API helpers

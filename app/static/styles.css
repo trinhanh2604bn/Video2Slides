@@ -169,7 +169,7 @@ a { color: var(--color-accent); }
 .icon-btn:hover, .icon-btn[aria-expanded="true"] { border-color: var(--color-text-muted); color: var(--color-text-primary); }
 .icon-btn:focus-visible { outline: none; box-shadow: var(--focus); border-color: var(--color-accent); }
 .icon-btn svg { width: 17px; height: 17px; display: none; }
-:root:not([data-theme-pref]) .ic-system,
+:root:not([data-theme-pref]) .ic-light,
 [data-theme-pref="system"] .ic-system, [data-theme-pref="light"] .ic-light, [data-theme-pref="dark"] .ic-dark { display: block; }
 .theme-list {
   position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; min-width: 176px; padding: 6px;
